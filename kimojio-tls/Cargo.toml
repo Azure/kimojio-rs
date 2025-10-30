@@ -1,0 +1,15 @@
+[package]
+name = "kimojio-tls"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+readme.workspace = true
+description = "Kimojio OpenSSL integration"
+
+[dependencies]
+rustix-uring.workspace = true
+
+[build-dependencies]
+cc.workspace = true

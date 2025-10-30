@@ -1,0 +1,61 @@
+name: Rust
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    if: github.repository == 'azure-data-database-platform/kimojio'
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Build
+      run: cargo clippy --all-targets -- -D warnings
+
+    - name: Run tests
+      run: cargo test --all-targets --features ssl2
+
+    - name: Check docs
+      run: cargo test --doc
+
+    - name: Check format
+      run: cargo fmt --all -- --check
+
+    - name: Check features
+      run: cargo clippy --all-targets --all-features -- -D warnings
+    
+  coverage:
+    if: github.repository == 'azure-data-database-platform/kimojio'
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install cargo-llvm-cov
+      run: cargo install cargo-llvm-cov
+
+    # for now we can see the results in the UI, don't need to save the html
+
+    # - name: Generate coverage
+    #   run: |
+    #     cargo llvm-cov --workspace --html
+    
+    # - name: Archive coverage repository
+    #   uses: actions/upload-artifact@v4
+    #   with:
+    #     name: coverage-report
+    #     path: target/llvm-cov/html
+
+    - name: Coverage summary
+      run: |
+        cargo llvm-cov --workspace --summary-only

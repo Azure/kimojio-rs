@@ -1,0 +1,67 @@
+[package]
+name = "kimojio"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+readme.workspace = true
+description = "A thread-per-core Linux io_uring async runtime optimized for latency."
+
+[lints.rust]
+# async_fn_in_trait can be a problem for public traits that
+# might need to return impl Future that is + Send. Since we
+# do not require Send futures, so we can allow async_fn_in_trait.
+async_fn_in_trait = "allow"
+
+[dependencies]
+foreign-types-shared.workspace = true
+futures.workspace = true
+impls.workspace = true
+intrusive-collections.workspace = true
+kimojio-tls.workspace = true
+libc.workspace = true
+openssl.workspace = true
+pin-project-lite.workspace = true
+rustix.workspace = true
+rustix-uring.workspace = true
+scopeguard.workspace = true
+static_assertions.workspace = true
+uuid.workspace = true
+zerocopy.workspace = true
+
+[features]
+# Enable IoUring feature which optimizes the uring hot path at the tradeoff of
+# requiring the same thread to call io_uring_enter() exclusively, the ring
+# cannot be shared across threads. Requires Linux 6.0 or later.
+setup_single_issuer = []
+# Enable support for io_uring_cmd to send direct NVMe commands to devices.
+# This requires using 128 byte SQEs and 32 byte CQEs that encapsulate the
+# underlying NVMe SQE and CQEs
+io_uring_cmd = []
+noencrypt = []
+enter_stats = []
+fault_injection = []
+# Temporary feature for ssl2
+ssl2 = []
+
+[dev-dependencies]
+criterion.workspace = true
+rcgen.workspace = true
+tempfile.workspace = true
+
+[[bench]]
+name = "iouring"
+harness = false
+
+[[bench]]
+name = "mut_in_place_cell_bench"
+harness = false
+
+[[bench]]
+name = "async_bench"
+harness = false
+
+[[bench]]
+name = "async_stream_bench"
+harness = false

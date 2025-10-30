@@ -1,0 +1,49 @@
+[workspace]
+
+members = [
+    "kimojio",
+    "kimojio-tls",
+    "perf",
+]
+
+resolver = "3"
+
+[workspace.package]
+version = "0.13.2"
+edition = "2024"
+license = "MIT"
+homepage = "https://github.com/Azure/kimojio-rs"
+repository = "https://github.com/Azure/kimojio-rs"
+readme = "README.md"
+
+[workspace.dependencies]
+cc = "1"
+criterion = { version = "0.7", default-features = false }
+foreign-types-shared = "0.1"
+futures = "0.3"
+impls = "1"
+intrusive-collections = "0.9"
+kimojio = { path = "kimojio", version = "0.13.2" }
+kimojio-tls = { path = "kimojio-tls", version = "0.13.2" }
+libc = "0.2"
+openssl = "0.10"
+pin-project-lite = "0.2"
+rcgen = { version = "0.14", features = ["x509-parser"] }
+roaring = "0.11"
+rustix = { version = "1", features = [
+    "io_uring",
+    "mount",
+    "fs",
+    "mm",
+    "process",
+    "rand",
+    "system",
+    "time",
+    "thread",
+] }
+rustix-uring = { version = "0.6" }
+scopeguard = "1"
+static_assertions = "1"
+tempfile = "3"
+uuid = { version = "1", features = ["v4"] }
+zerocopy = { version = "0.8", features = ["derive"] }

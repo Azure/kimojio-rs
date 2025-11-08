@@ -1,4 +1,5 @@
-// Copyright (c) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 //! AsyncStream is a trait that represents the ability to read
 //! and write to a stream. It is useful for creating generic
 //! I/O code that is agnostic to the underlying transport.

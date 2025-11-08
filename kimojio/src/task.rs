@@ -1,4 +1,5 @@
-// Copyright (c) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 //! Task represents the per-task state. A Task is bound to a thread. Tasks can
 //! suspend and be woken up by I/O. There can be many pending futures per task.
 //!

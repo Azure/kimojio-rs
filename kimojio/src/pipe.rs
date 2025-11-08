@@ -1,4 +1,5 @@
-// Copyright (c) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! `bipipe()` returns a pair of read-write pipes where the read
 //! of one is connected to the write of the other.

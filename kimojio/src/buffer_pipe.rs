@@ -1,4 +1,5 @@
-// Copyright (c) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 use crate::{AsyncEvent, AsyncLock, AsyncStreamRead, AsyncStreamWrite, Errno, SplittableStream};
 use std::{cell::Cell, rc::Rc, time::Instant};

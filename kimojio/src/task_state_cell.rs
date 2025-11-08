@@ -1,4 +1,5 @@
-// Copyright (c) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! TaskStateCell is a special case of RefCell for the very specific case of
 //! TaskState.  To get good performance from the innermost loop of the

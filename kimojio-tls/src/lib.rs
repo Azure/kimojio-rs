@@ -1,4 +1,5 @@
-// Copyright (c) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 use std::ffi::{CStr, c_char, c_ulonglong, c_void};
 use std::num::NonZeroU64;
 use std::ptr::null_mut;

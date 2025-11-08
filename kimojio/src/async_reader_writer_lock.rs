@@ -1,4 +1,5 @@
-// Copyright (c) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 //! AsyncReaderWriterLock is an interior mutability struct appropriate for
 //! shared access to data from a single thread but multiple tasks.
 //!

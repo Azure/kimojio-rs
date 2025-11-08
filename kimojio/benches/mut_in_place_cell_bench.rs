@@ -1,4 +1,5 @@
-// Copyright (c) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 use std::{cell::RefCell, hint::black_box, ops::DerefMut, rc::Rc, time::Duration};
 
 use criterion::{Criterion, criterion_group, criterion_main};

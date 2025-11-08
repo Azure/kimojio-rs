@@ -1,4 +1,5 @@
-// Copyright (c) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 //! AsyncEvent is used to suspend tasks until a condition occurs.
 //!
 //! AsyncEvent can be set or reset. It is possible to wait until it is set,

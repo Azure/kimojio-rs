@@ -1,4 +1,5 @@
-// Copyright (c) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 pub const POINTER_SIZE: usize = std::mem::size_of::<*const ()>();
 pub const ZERO_ID: u64 = 0;

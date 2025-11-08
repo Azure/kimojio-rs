@@ -1,4 +1,5 @@
-// Copyright (c) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 //! TlsContext provides an option to create server context and
 //! then provides an asynchronous stream which implement TLS
 //! over the stream

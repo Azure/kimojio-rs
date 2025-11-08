@@ -1,4 +1,5 @@
-// Copyright (c) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 use crate::{
     CompletionResources, Errno, OwnedFd,
     io_type::IOType,

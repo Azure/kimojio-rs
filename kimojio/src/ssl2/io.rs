@@ -1,4 +1,5 @@
-// Copyright (c) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 use crate::{AsyncStreamRead, AsyncStreamWrite};
 use rustix_uring::Errno;
 use std::collections::VecDeque;

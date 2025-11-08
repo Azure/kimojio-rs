@@ -1,4 +1,5 @@
-// Copyright (c) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 /// A buffer that can be prefixed with data. The primary use
 /// case is when you want to create a protocol stack where

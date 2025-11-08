@@ -1,4 +1,5 @@
-// Copyright (c) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 //! MutInPlaceCell, RcCell, and ArcCell are zero overhead abstractions
 //! for interior mutability. They are all replacements for RefCell.
 //!

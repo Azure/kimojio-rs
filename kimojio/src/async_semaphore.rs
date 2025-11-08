@@ -1,4 +1,5 @@
-// Copyright (c) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 //! AsyncSemaphore is a counter representing "tokens" you can acquire. If the
 //! count is zero you have to wait.  AsyncSemaphore is not scoped based as it is
 //! intended for more complex scenarios. You have to be careful to acquire and

@@ -184,11 +184,16 @@ pub struct TlsServerContext {
     ctx: *mut RawTlsServerContext,
 }
 
+// SAFETY: OpenSSL is safe to call from different
+// threads as long as not the same time (Send is
+// ok, but not Sync)
+unsafe impl Send for TlsServerContext {}
+
 pub struct TlsServer {
     server: *mut RawTlsServer,
 }
 
-// SAFETY: OpenSSL is safe to call from differnt
+// SAFETY: OpenSSL is safe to call from different
 // threads as long as not the same time (Send is
 // ok, but not Sync)
 unsafe impl Send for TlsServer {}

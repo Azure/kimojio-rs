@@ -2,7 +2,7 @@
 
 A thread-per-core Linux io_uring async runtime for Rust optimized for latency.
 
-[Documentation](http://Azure.github.io/kimojio)
+[Documentation](https://docs.rs/crate/kimojio/latest)
 
 Kimojio uses a single-threaded, cooperatively scheduled runtime. Task scheduling is fast and consistent because tasks do not migrate between threads. This design works well for I/O-bound workloads with fine-grained tasks and minimal CPU-bound work.
 

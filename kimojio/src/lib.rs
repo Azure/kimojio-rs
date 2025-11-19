@@ -73,7 +73,7 @@ pub use message_pipe::{
 };
 pub use mut_in_place_cell::MutInPlaceCell;
 use operations::kernel_version;
-pub use pointer_buffer::{IdPointerMsg, pointer_from_buffer, pointer_to_buffer};
+use pointer_buffer::{pointer_from_buffer, pointer_to_buffer};
 pub use prefix_buffer::{BufferView, OwnedBuffer, PrefixBuffer, StaticBuffer};
 pub use runtime::Runtime;
 pub use runtime_handle::{

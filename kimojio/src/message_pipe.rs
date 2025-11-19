@@ -90,7 +90,10 @@ impl<T: Send, R: Send> MessagePipe<T, R> {
             }
             Err(e) => {
                 // Reconstitute Box to prevent leaking on write failure
-                pointer_from_buffer::<T>(buffer);
+                unsafe {
+                    // SAFETY: since write failed, buffer is only copy of the pointer
+                    pointer_from_buffer::<T>(buffer);
+                }
                 Err(e)
             }
         }
@@ -142,7 +145,10 @@ impl<T: Send, R: Send> MessagePipe<T, R> {
             }
             Err(e) => {
                 // Reconstitute Box to prevent leaking on write failure
-                pointer_from_buffer::<T>(buffer);
+                unsafe {
+                    // SAFETY: since write failed, buffer is only copy of the pointer
+                    pointer_from_buffer::<T>(buffer);
+                }
                 Err(e)
             }
         }
@@ -157,7 +163,10 @@ impl<T: Send, R: Send> MessagePipe<T, R> {
             return Err(Errno::from_raw_os_error(libc::EPIPE));
         }
         assert_eq!(amount, buffer.len());
-        Ok(pointer_from_buffer(buffer))
+        unsafe {
+            // SAFETY: The read bytes are the only copy of the pointer
+            Ok(pointer_from_buffer(buffer))
+        }
     }
 }
 
@@ -272,7 +281,12 @@ impl<T: Send> MessagePipeSender<T> {
             }
             Err(e) => {
                 // Reconstitute Box to prevent leaking on write failure
-                pointer_from_buffer::<T>(buffer);
+                unsafe {
+                    // SAFETY
+                    //
+                    // since write failed, buffer is only copy of the pointer
+                    pointer_from_buffer::<T>(buffer);
+                }
                 Err(e)
             }
         }
@@ -290,7 +304,11 @@ impl<T: Send> MessagePipeSender<T> {
             }
             Err(e) => {
                 // Reconstitute Box to prevent leaking on write failure
-                pointer_from_buffer::<T>(buffer);
+                unsafe {
+                    // SAFETY
+                    // since write failed, buffer is only copy of the pointer
+                    pointer_from_buffer::<T>(buffer);
+                }
                 Err(e)
             }
         }
@@ -328,7 +346,10 @@ impl<'a, T> Future for RecvMessageFuture<'a, T> {
         match this.fut.poll(cx) {
             Poll::Ready(Ok(0)) => Poll::Ready(Err(Errno::PIPE)),
             Poll::Ready(Ok(POINTER_SIZE)) => {
-                let result = pointer_from_buffer_ref(&this.buffer.borrow());
+                let result = unsafe {
+                    // SAFETY: The read bytes are the only copy of the pointer
+                    pointer_from_buffer_ref(&this.buffer.borrow())
+                };
                 Poll::Ready(Ok(result))
             }
             Poll::Ready(Ok(amount)) => panic!("amount should be POINTER_SIZE, not {amount}"),
@@ -367,16 +388,16 @@ impl<T: Send, R: Send> IdMessagePipe<T, R> {
     /// boxed as it is sent in-process as a pointer.
     pub async fn send_message(&self, id: u64, message: Box<T>) -> Result<(), Errno> {
         let buffer = IdPointerMsg::from_id_box(id, message);
-        match operations::write(&self.pipe, &buffer.0).await {
+        let buffer_ref = buffer.as_ref();
+        match operations::write(&self.pipe, buffer_ref).await {
             Ok(amount) => {
-                assert!(amount == buffer.0.len());
+                assert!(amount == buffer_ref.len());
+                // If we succeeded in writing to pipe, then we no longer own the pointer and should
+                // not drop it.
+                std::mem::forget(buffer);
                 Ok(())
             }
-            Err(e) => {
-                // Reconstitute Box to prevent leaking on write failure
-                IdPointerMsg::into_id_box::<T>(buffer);
-                Err(e)
-            }
+            Err(e) => Err(e),
         }
     }
 
@@ -388,24 +409,24 @@ impl<T: Send, R: Send> IdMessagePipe<T, R> {
             return Err(Errno::from_raw_os_error(libc::EPIPE));
         }
         assert_eq!(amount, buffer.len());
-        Ok(IdPointerMsg(buffer).into_id_box())
+        Ok(IdPointerMsg::<R>::new(buffer).into_id_box())
     }
 
     /// Send a message on the pipe from any thread. `message` must be boxed as
     /// it is sent in-process as a pointer. This is a blocking call and should
     /// never be called from an async task.
     pub fn send_message_sync(&self, id: u64, message: Box<T>) -> Result<(), Errno> {
-        let buffer = IdPointerMsg::from_id_box(id, message);
-        match rustix::io::write(&self.pipe, &buffer.0) {
+        let buffer = IdPointerMsg::<T>::from_id_box(id, message);
+        let buffer_ref = buffer.as_ref();
+        match rustix::io::write(&self.pipe, buffer_ref) {
             Ok(amount) => {
-                assert!(amount == buffer.0.len());
+                assert!(amount == buffer_ref.len());
+                // If we succeeded in writing to pipe, then we no longer own the pointer and should
+                // not drop it.
+                std::mem::forget(buffer);
                 Ok(())
             }
-            Err(e) => {
-                // Reconstitute Box to prevent leaking on write failure
-                buffer.into_id_box::<T>();
-                Err(e)
-            }
+            Err(e) => Err(e),
         }
     }
 
@@ -418,7 +439,7 @@ impl<T: Send, R: Send> IdMessagePipe<T, R> {
             return Err(Errno::from_raw_os_error(libc::EPIPE));
         }
         assert_eq!(amount, buffer.len());
-        Ok(IdPointerMsg(buffer).into_id_box())
+        Ok(IdPointerMsg::<R>::new(buffer).into_id_box())
     }
 }
 

@@ -38,29 +38,29 @@ use rustix_uring::squeue::Entry as SQE;
 // Future representing operations which return either 0 or an error value.
 // Underlying result type is Result<()> which will contain () or the error
 // if the operation failed
-pub type UnitFuture = RingFuture<(), ResultToUnit>;
+pub type UnitFuture<'a> = RingFuture<'a, (), ResultToUnit>;
 
 // Future for operations which return zero or positive on success,
 // and a negative value on error.
-pub type UsizeFuture = RingFuture<usize, ResultToUsize>;
+pub type UsizeFuture<'a> = RingFuture<'a, usize, ResultToUsize>;
 
 // Future for operations which return a zero or positive file descriptor
 // on success and negative value on error.
-pub type OwnedFdFuture = RingFuture<OwnedFd, ResultToOwnedFd>;
+pub type OwnedFdFuture<'a> = RingFuture<'a, OwnedFd, ResultToOwnedFd>;
 
 #[cfg(feature = "io_uring_cmd")]
-pub type UringCmdFuture = RingFuture<[u64; 2], ResultToCqe>;
+pub type UringCmdFuture<'a> = RingFuture<'a, [u64; 2], ResultToCqe>;
 
 pub trait MakeResult<T: Unpin>: Unpin {
     fn make_success(value: u32, cqe: &[u64; 2]) -> T;
 }
 
-pub struct RingFuture<T: Unpin, C: MakeResult<T>> {
+pub struct RingFuture<'a, T: Unpin, C: MakeResult<T>> {
     handle: Option<Rc<Completion>>,
-    _marker: std::marker::PhantomData<(T, C)>,
+    _marker: std::marker::PhantomData<(&'a (), T, C)>,
 }
 
-impl<T: Unpin, C: MakeResult<T>> RingFuture<T, C> {
+impl<'a, T: Unpin, C: MakeResult<T>> RingFuture<'a, T, C> {
     pub(crate) fn new<Entry: Into<SQE>>(
         entry: Entry,
         fd: i32,
@@ -135,7 +135,7 @@ impl<T: Unpin, C: MakeResult<T>> RingFuture<T, C> {
     }
 }
 
-impl<T: Unpin, C: MakeResult<T>> IsIoPoll for RingFuture<T, C> {
+impl<'a, T: Unpin, C: MakeResult<T>> IsIoPoll for RingFuture<'a, T, C> {
     fn is_io_poll(&self) -> bool {
         if let Some(completion) = self.handle.as_ref() {
             completion.iopoll
@@ -145,7 +145,7 @@ impl<T: Unpin, C: MakeResult<T>> IsIoPoll for RingFuture<T, C> {
     }
 }
 
-impl<T: Unpin, C: MakeResult<T>> Future for RingFuture<T, C> {
+impl<'a, T: Unpin, C: MakeResult<T>> Future for RingFuture<'a, T, C> {
     type Output = Result<T, Errno>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
@@ -284,7 +284,7 @@ impl<T: Unpin, C: MakeResult<T>> Future for RingFuture<T, C> {
     }
 }
 
-impl<T: Unpin, C: MakeResult<T>> Drop for RingFuture<T, C> {
+impl<'a, T: Unpin, C: MakeResult<T>> Drop for RingFuture<'a, T, C> {
     fn drop(&mut self) {
         if let Some(completion) = &self.handle {
             // We got a pending_pool_handle. That means we are being dropped and the I/O
@@ -350,7 +350,7 @@ impl<T: Unpin, C: MakeResult<T>> Drop for RingFuture<T, C> {
     }
 }
 
-impl<T: Unpin, C: MakeResult<T>> futures::future::FusedFuture for RingFuture<T, C> {
+impl<'a, T: Unpin, C: MakeResult<T>> futures::future::FusedFuture for RingFuture<'a, T, C> {
     fn is_terminated(&self) -> bool {
         if let Some(completion) = self.handle.as_ref() {
             completion

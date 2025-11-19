@@ -97,13 +97,13 @@ impl<T: Send, R: Send> MessagePipe<T, R> {
     }
 
     /// Receive a message on the pipe. This must be called from a uringruntime thread.
-    pub fn recv_message(&self) -> RecvMessageFuture<R> {
+    pub fn recv_message(&self) -> RecvMessageFuture<'_, R> {
         self.recv_message_with_timeout(None)
     }
 
     /// Receive a message on the pipe with an optional timeout.
     /// This must be called from a uringruntime thread.
-    pub fn recv_message_with_timeout(&self, timeout: Option<Duration>) -> RecvMessageFuture<R> {
+    pub fn recv_message_with_timeout(&self, timeout: Option<Duration>) -> RecvMessageFuture<'_, R> {
         use std::os::fd::AsRawFd;
         let buffer = Rc::new(RefCell::new([0u8; POINTER_SIZE]));
         let fd = self.pipe.as_raw_fd();
@@ -190,13 +190,13 @@ impl<R: Send> MessagePipeReceiver<R> {
     }
 
     /// Receive a message on the pipe. This must be called from a uringruntime thread.
-    pub fn recv_message(&self) -> RecvMessageFuture<R> {
+    pub fn recv_message(&self) -> RecvMessageFuture<'_, R> {
         self.recv_message_with_timeout(None)
     }
 
     /// Receive a message on the pipe with an optional timeout.
     /// This must be called from a uringruntime thread.
-    pub fn recv_message_with_timeout(&self, timeout: Option<Duration>) -> RecvMessageFuture<R> {
+    pub fn recv_message_with_timeout(&self, timeout: Option<Duration>) -> RecvMessageFuture<'_, R> {
         use std::os::fd::AsRawFd;
         let buffer = Rc::new(RefCell::new([0u8; POINTER_SIZE]));
         let fd = self.pipe.as_raw_fd();
@@ -307,15 +307,15 @@ impl<T: Send> Clone for MessagePipeSender<T> {
 }
 
 pin_project_lite::pin_project! {
-    pub struct RecvMessageFuture<T> {
+    pub struct RecvMessageFuture<'a, T> {
         #[pin]
-        fut: crate::ring_future::UsizeFuture,
+        fut: crate::ring_future::UsizeFuture<'a>,
         buffer: Rc<RefCell<[u8; POINTER_SIZE]>>,
         _marker: PhantomData<T>,
     }
 }
 
-impl<T> Future for RecvMessageFuture<T> {
+impl<'a, T> Future for RecvMessageFuture<'a, T> {
     type Output = Result<Box<T>, Errno>;
 
     fn poll(
@@ -338,7 +338,7 @@ impl<T> Future for RecvMessageFuture<T> {
     }
 }
 
-impl<T> FusedFuture for RecvMessageFuture<T> {
+impl<'a, T> FusedFuture for RecvMessageFuture<'a, T> {
     fn is_terminated(&self) -> bool {
         self.fut.is_terminated()
     }

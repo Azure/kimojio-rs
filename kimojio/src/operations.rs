@@ -3,9 +3,32 @@
 //! This file implements the futures that I/O and utility functionality
 //! for the uringruntime.
 //!
-//! SAFETY: When creating a RingFuture it is critical that EntryFunc
-//! should not create a local variable and pass it by reference to
-//! the Entry struct. TODO: enforce via lifetime annotations.
+//! operations calls need to associate their input lifetimes with the RingFuture
+//! lifetime to ensure that the inputs are not dropped before the future. The
+//! following example checks this for operations::write.
+//!
+//! For futures that get dropped, we cancel the I/O and black the thread
+//! processing completions until the I/O is fully cancelled to ensure no
+//! access-after-free issues. This will stall polling of tasks. To avoid
+//! that, use io_scope for scenarios where dropping RingFuture is expected.
+//!
+//! ```rust,compile_fail
+//! use kimojio::{
+//!     Errno,
+//!     configuration::Configuration,
+//!     operations::{self, OFlags},
+//! };
+//! async fn kimojio_main() -> Result<(), Errno> {
+//!     let flags = OFlags::CREATE | OFlags::RDWR;
+//!     let fd = operations::open(c"/tmp/example.txt", flags, 0o644.into()).await?;
+//!     let buffer = b"I am ub!".to_vec();
+//!     let fut = operations::write(&fd, &buffer);
+//!     drop(buffer);
+//!     let written = fut.await?;
+//!     Ok(())
+//! }
+
+//! ```
 //!
 use std::future::Future;
 use std::io::IoSlice;
@@ -54,7 +77,7 @@ impl<T, R: Future<Output = Result<T, Errno>> + FusedFuture> OperationFuture<T> f
 
 // TODO: splice, tee, poll, cancel, epoll
 
-pub fn open(filename: &CStr, flags: OFlags, mode: Mode) -> OwnedFdFuture {
+pub fn open(filename: &CStr, flags: OFlags, mode: Mode) -> OwnedFdFuture<'_> {
     let dirfd = Fd(libc::AT_FDCWD);
     OwnedFdFuture::new(
         opcode::OpenAt::new(dirfd, filename.as_ptr())
@@ -67,7 +90,7 @@ pub fn open(filename: &CStr, flags: OFlags, mode: Mode) -> OwnedFdFuture {
     )
 }
 
-pub fn link(oldpath: &CStr, newpath: &CStr) -> UnitFuture {
+pub fn link<'a>(oldpath: &'a CStr, newpath: &'a CStr) -> UnitFuture<'a> {
     let dirfd = Fd(libc::AT_FDCWD);
     UnitFuture::new(
         opcode::LinkAt::new(dirfd, oldpath.as_ptr(), dirfd, newpath.as_ptr()).build(),
@@ -77,7 +100,7 @@ pub fn link(oldpath: &CStr, newpath: &CStr) -> UnitFuture {
     )
 }
 
-pub fn symlink(target: &CStr, linkpath: &CStr) -> UnitFuture {
+pub fn symlink<'a>(target: &'a CStr, linkpath: &'a CStr) -> UnitFuture<'a> {
     let dirfd = Fd(libc::AT_FDCWD);
     UnitFuture::new(
         opcode::SymlinkAt::new(dirfd, target.as_ptr(), linkpath.as_ptr()).build(),
@@ -87,7 +110,7 @@ pub fn symlink(target: &CStr, linkpath: &CStr) -> UnitFuture {
     )
 }
 
-pub fn mkdir(pathname: &CStr, mode: Mode) -> UnitFuture {
+pub fn mkdir(pathname: &CStr, mode: Mode) -> UnitFuture<'_> {
     let dirfd = Fd(libc::AT_FDCWD);
     UnitFuture::new(
         opcode::MkDirAt::new(dirfd, pathname.as_ptr())
@@ -99,7 +122,7 @@ pub fn mkdir(pathname: &CStr, mode: Mode) -> UnitFuture {
     )
 }
 
-pub fn rmdir(pathname: &CStr) -> UnitFuture {
+pub fn rmdir(pathname: &CStr) -> UnitFuture<'_> {
     let dirfd = Fd(libc::AT_FDCWD);
     UnitFuture::new(
         opcode::UnlinkAt::new(dirfd, pathname.as_ptr())
@@ -117,7 +140,7 @@ pub async fn stat(filename: &CStr) -> Result<Statx, Errno> {
     Ok(unsafe { statx.assume_init() })
 }
 
-fn stat_internal(filename: &CStr, statx: *mut Statx) -> UnitFuture {
+fn stat_internal<'a>(filename: &'a CStr, statx: *mut Statx) -> UnitFuture<'a> {
     let dirfd = Fd(libc::AT_FDCWD);
     UnitFuture::new(
         opcode::Statx::new(dirfd, filename.as_ptr(), statx).build(),
@@ -127,7 +150,7 @@ fn stat_internal(filename: &CStr, statx: *mut Statx) -> UnitFuture {
     )
 }
 
-pub async fn fstat(fd: impl AsFd) -> Result<Statx, Errno> {
+pub async fn fstat(fd: &impl AsFd) -> Result<Statx, Errno> {
     let mut statx = std::mem::MaybeUninit::<Statx>::uninit();
     fstat_internal(fd, statx.as_mut_ptr()).await?;
     Ok(unsafe { statx.assume_init() })
@@ -135,7 +158,7 @@ pub async fn fstat(fd: impl AsFd) -> Result<Statx, Errno> {
 
 /// statx(2) - fstat
 /// AT_EMPTY_PATH: If pathname is an empty string, operate on the file referred to by dirfd
-fn fstat_internal(fd: impl AsFd, statx: *mut Statx) -> UnitFuture {
+fn fstat_internal<'a>(fd: &impl AsFd, statx: *mut Statx) -> UnitFuture<'a> {
     let fd = Fd(fd.as_fd().as_raw_fd());
     let empty_path = c"";
     let statx_op = opcode::Statx::new(fd, empty_path.as_ptr(), statx)
@@ -144,7 +167,7 @@ fn fstat_internal(fd: impl AsFd, statx: *mut Statx) -> UnitFuture {
     UnitFuture::new(statx_op, -1, None, IOType::Stat)
 }
 
-pub fn unlink(filename: &CStr) -> UnitFuture {
+pub fn unlink(filename: &CStr) -> UnitFuture<'_> {
     let dirfd = Fd(libc::AT_FDCWD);
     UnitFuture::new(
         opcode::UnlinkAt::new(dirfd, filename.as_ptr()).build(),
@@ -154,7 +177,7 @@ pub fn unlink(filename: &CStr) -> UnitFuture {
     )
 }
 
-pub fn rename(oldpath: &CStr, newpath: &CStr) -> UnitFuture {
+pub fn rename<'a>(oldpath: &'a CStr, newpath: &'a CStr) -> UnitFuture<'a> {
     let dirfd = Fd(libc::AT_FDCWD);
     UnitFuture::new(
         opcode::RenameAt::new(dirfd, oldpath.as_ptr(), dirfd, newpath.as_ptr()).build(),
@@ -164,7 +187,7 @@ pub fn rename(oldpath: &CStr, newpath: &CStr) -> UnitFuture {
     )
 }
 
-pub fn fadvise(fd: impl AsFd, offset: u64, len: u64, advice: Advice) -> UnitFuture {
+pub fn fadvise(fd: &impl AsFd, offset: u64, len: u64, advice: Advice) -> UnitFuture<'_> {
     let fd = fd.as_fd().as_raw_fd();
     UnitFuture::new(
         opcode::Fadvise::new(Fd(fd), len as u32, advice)
@@ -176,7 +199,7 @@ pub fn fadvise(fd: impl AsFd, offset: u64, len: u64, advice: Advice) -> UnitFutu
     )
 }
 
-pub fn madvise(addr: *const libc::c_void, len: u64, advice: Advice) -> UnitFuture {
+pub fn madvise(addr: *const libc::c_void, len: u64, advice: Advice) -> UnitFuture<'static> {
     UnitFuture::new(
         opcode::Madvise::new(addr, len as u32, advice).build(),
         -1,
@@ -185,7 +208,7 @@ pub fn madvise(addr: *const libc::c_void, len: u64, advice: Advice) -> UnitFutur
     )
 }
 
-pub fn fallocate(fd: impl AsFd, mode: i32, offset: u64, len: u64) -> UnitFuture {
+pub fn fallocate(fd: &impl AsFd, mode: i32, offset: u64, len: u64) -> UnitFuture<'_> {
     let fd = fd.as_fd().as_raw_fd();
     UnitFuture::new(
         opcode::Fallocate::new(Fd(fd), len)
@@ -227,7 +250,7 @@ pub async fn socket(
     }
 }
 
-pub fn accept(fd: impl AsFd) -> OwnedFdFuture {
+pub fn accept(fd: &impl AsFd) -> OwnedFdFuture<'_> {
     let fd = fd.as_fd().as_raw_fd();
     OwnedFdFuture::new(
         opcode::Accept::new(Fd(fd), std::ptr::null_mut(), std::ptr::null_mut()).build(),
@@ -237,7 +260,7 @@ pub fn accept(fd: impl AsFd) -> OwnedFdFuture {
     )
 }
 
-pub fn shutdown(fd: impl AsFd, how: i32) -> UnitFuture {
+pub fn shutdown(fd: &impl AsFd, how: i32) -> UnitFuture<'_> {
     let fd = fd.as_fd().as_raw_fd();
     UnitFuture::new(
         opcode::Shutdown::new(Fd(fd), how).build(),
@@ -247,12 +270,12 @@ pub fn shutdown(fd: impl AsFd, how: i32) -> UnitFuture {
     )
 }
 
-pub fn fsync(fd: impl AsFd) -> UnitFuture {
+pub fn fsync(fd: &impl AsFd) -> UnitFuture<'_> {
     let fd = fd.as_fd().as_raw_fd();
     UnitFuture::new(opcode::Fsync::new(Fd(fd)).build(), fd, None, IOType::Fsync)
 }
 
-pub fn sync_file_range(fd: impl AsFd, offset: u64, len: u32) -> UnitFuture {
+pub fn sync_file_range(fd: &impl AsFd, offset: u64, len: u32) -> UnitFuture<'_> {
     let fd = fd.as_fd().as_raw_fd();
     UnitFuture::new(
         opcode::SyncFileRange::new(Fd(fd), len)
@@ -264,12 +287,12 @@ pub fn sync_file_range(fd: impl AsFd, offset: u64, len: u32) -> UnitFuture {
     )
 }
 
-pub fn bind(fd: impl AsFd, address: &SocketAddr) -> Result<(), Errno> {
-    rustix::net::bind(&fd, address)
+pub fn bind(fd: &impl AsFd, address: &SocketAddr) -> Result<(), Errno> {
+    rustix::net::bind(fd, address)
 }
 
-pub fn listen(fd: impl AsFd, backlog: i32) -> Result<(), Errno> {
-    rustix::net::listen(&fd, backlog)
+pub fn listen(fd: &impl AsFd, backlog: i32) -> Result<(), Errno> {
+    rustix::net::listen(fd, backlog)
 }
 
 fn sockaddr_from_socketaddr(addr: &SocketAddrV4) -> sockaddr_in {
@@ -340,7 +363,7 @@ fn sockaddr_from_socketaddr_unix(addr: &SocketAddrUnix) -> (sockaddr_un, usize) 
     )
 }
 
-pub async fn connect_unix(fd: impl AsFd, addr: &SocketAddrUnix) -> Result<(), Errno> {
+pub async fn connect_unix(fd: &impl AsFd, addr: &SocketAddrUnix) -> Result<(), Errno> {
     let fd = fd.as_fd().as_raw_fd();
     let (addr, addrlen) = sockaddr_from_socketaddr_unix(addr);
     let addr = core::ptr::addr_of!(addr) as *const SocketAddrOpaque;
@@ -353,7 +376,7 @@ pub async fn connect_unix(fd: impl AsFd, addr: &SocketAddrUnix) -> Result<(), Er
     .await
 }
 
-pub async fn connect(fd: impl AsFd, addr: &SocketAddr) -> Result<(), Errno> {
+pub async fn connect(fd: &impl AsFd, addr: &SocketAddr) -> Result<(), Errno> {
     let fd = fd.as_fd().as_raw_fd();
     match addr {
         SocketAddr::V4(addr) => {
@@ -383,20 +406,20 @@ pub async fn connect(fd: impl AsFd, addr: &SocketAddr) -> Result<(), Errno> {
     }
 }
 
-pub fn writev(
-    fd: impl AsFd,
-    iovec: &[IoSlice<'_>],
+pub fn writev<'a>(
+    fd: &impl AsFd,
+    iovec: &'a [IoSlice<'_>],
     offset: Option<u64>,
-) -> ErrnoOrFuture<UsizeFuture> {
+) -> ErrnoOrFuture<UsizeFuture<'a>> {
     writev_with_deadline(fd, iovec, offset, None)
 }
 
-pub fn writev_with_deadline(
-    fd: impl AsFd,
-    iovec: &[IoSlice<'_>],
+pub fn writev_with_deadline<'a>(
+    fd: &impl AsFd,
+    iovec: &'a [IoSlice<'_>],
     offset: Option<u64>,
     deadline: Option<Instant>,
-) -> ErrnoOrFuture<UsizeFuture> {
+) -> ErrnoOrFuture<UsizeFuture<'a>> {
     let timeout = if let Some(deadline) = deadline {
         if let Some(duration) = deadline.checked_duration_since(Instant::now()) {
             Some(duration)
@@ -414,12 +437,12 @@ pub fn writev_with_deadline(
     }
 }
 
-pub fn writev_with_timeout(
-    fd: impl AsFd,
-    buffers: &[IoSlice<'_>],
+pub fn writev_with_timeout<'a>(
+    fd: &impl AsFd,
+    buffers: &'a [IoSlice<'_>],
     offset: Option<u64>,
     timeout: Option<Duration>,
-) -> UsizeFuture {
+) -> UsizeFuture<'a> {
     let fd = fd.as_fd().as_raw_fd();
     // IoSlice is guaranteed ABI compatible with iovec
     let iovec = buffers.as_ptr() as *const iovec;
@@ -433,15 +456,15 @@ pub fn writev_with_timeout(
     )
 }
 
-pub fn write(fd: impl AsFd, buf: &[u8]) -> ErrnoOrFuture<UsizeFuture> {
+pub fn write<'a>(fd: &impl AsFd, buf: &'a [u8]) -> ErrnoOrFuture<UsizeFuture<'a>> {
     write_with_deadline(fd, buf, None)
 }
 
-pub fn write_with_deadline(
-    fd: impl AsFd,
-    buf: &[u8],
+pub fn write_with_deadline<'a>(
+    fd: &impl AsFd,
+    buf: &'a [u8],
     deadline: Option<Instant>,
-) -> ErrnoOrFuture<UsizeFuture> {
+) -> ErrnoOrFuture<UsizeFuture<'a>> {
     let timeout = if let Some(deadline) = deadline {
         if let Some(duration) = deadline.checked_duration_since(Instant::now()) {
             Some(duration)
@@ -459,7 +482,11 @@ pub fn write_with_deadline(
     }
 }
 
-pub fn write_with_timeout(fd: impl AsFd, buf: &[u8], timeout: Option<Duration>) -> UsizeFuture {
+pub fn write_with_timeout<'a>(
+    fd: &impl AsFd,
+    buf: &'a [u8],
+    timeout: Option<Duration>,
+) -> UsizeFuture<'a> {
     let fd = fd.as_fd().as_raw_fd();
     UsizeFuture::new(
         opcode::Write::new(Fd(fd), buf.as_ptr(), buf.len() as u32)
@@ -471,7 +498,12 @@ pub fn write_with_timeout(fd: impl AsFd, buf: &[u8], timeout: Option<Duration>) 
     )
 }
 
-pub fn send(fd: impl AsFd, buf: &[u8], flags: SendFlags, timeout: Option<Duration>) -> UsizeFuture {
+pub fn send<'a>(
+    fd: &impl AsFd,
+    buf: &'a [u8],
+    flags: SendFlags,
+    timeout: Option<Duration>,
+) -> UsizeFuture<'a> {
     let fd = fd.as_fd().as_raw_fd();
     UsizeFuture::new(
         opcode::Send::new(Fd(fd), buf.as_ptr(), buf.len() as u32)
@@ -483,12 +515,12 @@ pub fn send(fd: impl AsFd, buf: &[u8], flags: SendFlags, timeout: Option<Duratio
     )
 }
 
-pub fn recv(
-    fd: impl AsFd,
-    buf: &mut [u8],
+pub fn recv<'a>(
+    fd: &impl AsFd,
+    buf: &'a mut [u8],
     flags: RecvFlags,
     timeout: Option<Duration>,
-) -> UsizeFuture {
+) -> UsizeFuture<'a> {
     let fd = fd.as_fd().as_raw_fd();
     UsizeFuture::new(
         opcode::Recv::new(Fd(fd), buf.as_mut_ptr(), buf.len() as u32)
@@ -500,12 +532,12 @@ pub fn recv(
     )
 }
 
-pub fn recvmsg(
-    fd: impl AsFd,
-    msghdr: &mut MsgHdr,
+pub fn recvmsg<'a>(
+    fd: &impl AsFd,
+    msghdr: &'a mut MsgHdr,
     flags: RecvFlags,
     timeout: Option<Duration>,
-) -> UsizeFuture {
+) -> UsizeFuture<'a> {
     let fd = fd.as_fd().as_raw_fd();
     UsizeFuture::new(
         // layouts between libc and iouring msghdr are identical
@@ -518,12 +550,12 @@ pub fn recvmsg(
     )
 }
 
-pub fn sendmsg(
-    fd: impl AsFd,
-    msghdr: &mut MsgHdr,
+pub fn sendmsg<'a>(
+    fd: &impl AsFd,
+    msghdr: &'a mut MsgHdr,
     flags: SendFlags,
     timeout: Option<Duration>,
-) -> UsizeFuture {
+) -> UsizeFuture<'a> {
     let fd = fd.as_fd().as_raw_fd();
     UsizeFuture::new(
         opcode::SendMsg::new(Fd(fd), msghdr as *mut MsgHdr)
@@ -535,7 +567,12 @@ pub fn sendmsg(
     )
 }
 
-pub fn pwrite_polled(fd: impl AsFd, buf: &[u8], offset: u64, polled: bool) -> UsizeFuture {
+pub fn pwrite_polled<'a>(
+    fd: impl AsFd,
+    buf: &'a [u8],
+    offset: u64,
+    polled: bool,
+) -> UsizeFuture<'a> {
     let fd = fd.as_fd().as_raw_fd();
     UsizeFuture::with_polled(
         opcode::Write::new(Fd(fd), buf.as_ptr(), buf.len() as u32)
@@ -549,11 +586,11 @@ pub fn pwrite_polled(fd: impl AsFd, buf: &[u8], offset: u64, polled: bool) -> Us
     )
 }
 
-pub fn pwrite(fd: impl AsFd, buf: &[u8], offset: u64) -> UsizeFuture {
+pub fn pwrite<'a>(fd: &impl AsFd, buf: &'a [u8], offset: u64) -> UsizeFuture<'a> {
     pwrite_polled(fd, buf, offset, false)
 }
 
-pub fn readv(fd: impl AsFd, iovec: &[iovec], offset: Option<u64>) -> UsizeFuture {
+pub fn readv<'a>(fd: &impl AsFd, iovec: &'a [iovec], offset: Option<u64>) -> UsizeFuture<'a> {
     let fd = fd.as_fd().as_raw_fd();
     UsizeFuture::new(
         opcode::Readv::new(Fd(fd), iovec.as_ptr(), iovec.len() as u32)
@@ -565,15 +602,15 @@ pub fn readv(fd: impl AsFd, iovec: &[iovec], offset: Option<u64>) -> UsizeFuture
     )
 }
 
-pub fn read(fd: impl AsFd, buf: &mut [u8]) -> UsizeFuture {
+pub fn read<'a>(fd: &impl AsFd, buf: &'a mut [u8]) -> UsizeFuture<'a> {
     read_with_timeout(fd, buf, None)
 }
 
-pub fn read_with_deadline(
-    fd: impl AsFd,
-    buf: &mut [u8],
+pub fn read_with_deadline<'a>(
+    fd: &impl AsFd,
+    buf: &'a mut [u8],
     deadline: Option<Instant>,
-) -> ErrnoOrFuture<UsizeFuture> {
+) -> ErrnoOrFuture<UsizeFuture<'a>> {
     let timeout = if let Some(deadline) = deadline {
         if let Some(duration) = deadline.checked_duration_since(Instant::now()) {
             Some(duration)
@@ -591,7 +628,11 @@ pub fn read_with_deadline(
     }
 }
 
-pub fn read_with_timeout(fd: impl AsFd, buf: &mut [u8], timeout: Option<Duration>) -> UsizeFuture {
+pub fn read_with_timeout<'a>(
+    fd: &impl AsFd,
+    buf: &'a mut [u8],
+    timeout: Option<Duration>,
+) -> UsizeFuture<'a> {
     let fd = fd.as_fd().as_raw_fd();
     UsizeFuture::new(
         opcode::Read::new(Fd(fd), buf.as_mut_ptr(), buf.len() as u32)
@@ -603,7 +644,7 @@ pub fn read_with_timeout(fd: impl AsFd, buf: &mut [u8], timeout: Option<Duration
     )
 }
 
-pub fn pread(fd: impl AsFd, buf: &mut [u8], offset: u64) -> UsizeFuture {
+pub fn pread<'a>(fd: &impl AsFd, buf: &'a mut [u8], offset: u64) -> UsizeFuture<'a> {
     let fd = fd.as_fd().as_raw_fd();
     UsizeFuture::new(
         opcode::Read::new(Fd(fd), buf.as_mut_ptr(), buf.len() as u32)
@@ -615,14 +656,14 @@ pub fn pread(fd: impl AsFd, buf: &mut [u8], offset: u64) -> UsizeFuture {
     )
 }
 
-pub fn close(fd: OwnedFd) -> UnitFuture {
+pub fn close(fd: OwnedFd) -> UnitFuture<'static> {
     // we are consuming the fd ourselves, so suppress the Drop trait
     let fd = ManuallyDrop::new(fd);
     let fd = fd.as_fd().as_raw_fd();
     UnitFuture::new(opcode::Close::new(Fd(fd)).build(), fd, None, IOType::Close)
 }
 
-pub fn nop() -> UnitFuture {
+pub fn nop() -> UnitFuture<'static> {
     UnitFuture::new(opcode::Nop::new().build(), -1, None, IOType::Nop)
 }
 
@@ -635,7 +676,7 @@ pub fn nop() -> UnitFuture {
 /// 1) The file descriptor should be a FD for the /dev/ngDn1 NVMe generic dev
 /// 2) The op value is a special value for NVMe passthru
 #[cfg(feature = "io_uring_cmd")]
-pub fn uring_cmd(fd: impl AsFd, op: u32, cmd: [u8; 80]) -> UringCmdFuture {
+pub fn uring_cmd(fd: &impl AsFd, op: u32, cmd: [u8; 80]) -> UringCmdFuture<'_> {
     let fd = fd.as_fd().as_raw_fd();
     UringCmdFuture::new(
         opcode::UringCmd80::new(Fd(fd), op).cmd(cmd).build(),
@@ -646,7 +687,7 @@ pub fn uring_cmd(fd: impl AsFd, op: u32, cmd: [u8; 80]) -> UringCmdFuture {
 }
 
 #[cfg(feature = "io_uring_cmd")]
-pub fn uring_cmd_polled(fd: impl AsFd, op: u32, cmd: [u8; 80]) -> UringCmdFuture {
+pub fn uring_cmd_polled(fd: &impl AsFd, op: u32, cmd: [u8; 80]) -> UringCmdFuture<'_> {
     let fd = fd.as_fd().as_raw_fd();
     UringCmdFuture::with_polled(
         opcode::UringCmd80::new(Fd(fd), op).cmd(cmd).build(),
@@ -739,7 +780,7 @@ impl FusedFuture for SetYieldCpuFuture {
 /// # Cancel safety
 ///
 /// This method is cancel safe.
-pub fn sleep(duration: Duration) -> SleepFuture {
+pub fn sleep(duration: Duration) -> SleepFuture<'static> {
     // boxed Timespec will be dropped when the Completion drops, making
     // this cancel safe.
     let timespec = Box::new(Timespec::from(duration));
@@ -756,19 +797,19 @@ pub fn sleep(duration: Duration) -> SleepFuture {
 }
 
 pin_project_lite::pin_project! {
-    pub struct SleepFuture {
+    pub struct SleepFuture<'a> {
         #[pin]
-        fut: UnitFuture,
+        fut: UnitFuture<'a>,
     }
 }
 
-impl SleepFuture {
+impl<'a> SleepFuture<'a> {
     pub fn cancel(self: Pin<&mut Self>) {
         self.project().fut.cancel();
     }
 }
 
-impl Future for SleepFuture {
+impl<'a> Future for SleepFuture<'a> {
     type Output = Result<(), Errno>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
@@ -783,7 +824,7 @@ impl Future for SleepFuture {
     }
 }
 
-impl FusedFuture for SleepFuture {
+impl<'a> FusedFuture for SleepFuture<'a> {
     fn is_terminated(&self) -> bool {
         self.fut.is_terminated()
     }

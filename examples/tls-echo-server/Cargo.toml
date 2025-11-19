@@ -1,0 +1,11 @@
+[package]
+name = "tls-echo-server"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+kimojio.workspace = true
+openssl.workspace = true
+rustix.workspace = true

@@ -4,6 +4,7 @@ members = [
     "kimojio",
     "kimojio-tls",
     "perf",
+    "examples/tls-echo-server",
 ]
 
 resolver = "3"
@@ -47,3 +48,7 @@ static_assertions = "1"
 tempfile = "3"
 uuid = { version = "1", features = ["v4"] }
 zerocopy = { version = "0.8", features = ["derive"] }
+
+# for examples
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }

@@ -11,7 +11,7 @@ env:
 
 jobs:
   build:
-    if: github.repository == 'Azure/kimojio'
+    if: github.repository == 'Azure/kimojio-rs'
 
     runs-on: ubuntu-latest
 

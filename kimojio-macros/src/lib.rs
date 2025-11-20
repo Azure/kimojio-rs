@@ -8,7 +8,7 @@
 
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::{ItemFn, ReturnType, parse_macro_input};
+use syn::{ItemFn, parse_macro_input};
 
 /// Marks an async main function to be run with the kimojio runtime.
 ///
@@ -76,31 +76,20 @@ pub fn main(_attr: TokenStream, item: TokenStream) -> TokenStream {
     // Get the function body without async
     let body = &block;
 
-    // Determine if we need to handle the return value
-    let run_call = match &sig.output {
-        ReturnType::Default => {
-            // No return type, just run the future
-            quote! {
-                kimojio::run(0, async #body);
-            }
-        }
-        ReturnType::Type(_, _) => {
-            // Has a return type, unwrap the result
-            quote! {
-                if let Some(result) = kimojio::run(0, async #body) {
-                    if let Err(payload) = result {
-                        std::panic::resume_unwind(payload);
-                    }
-                }
-            }
-        }
-    };
+    // Get the return type from the async function signature
+    let return_type = &sig.output;
 
     // Generate the expanded code
     let expanded = quote! {
         #(#attrs)*
-        #vis fn main() {
-            #run_call
+        #vis fn main() #return_type {
+            match kimojio::run(0, async #body) {
+                // Propagate the body return value
+                Some(Ok(output)) => output,
+                // Task panicked.
+                Some(Err(panic_payload)) => std::panic::resume_unwind(panic_payload),
+                None => panic!("Runtime shutdown_loop called"),
+            }
         }
     };
 

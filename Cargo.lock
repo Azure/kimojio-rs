@@ -527,7 +527,7 @@ dependencies = [
 
 [[package]]
 name = "kimojio"
-version = "0.13.2"
+version = "0.14.0"
 dependencies = [
  "criterion",
  "foreign-types-shared",
@@ -550,7 +550,7 @@ dependencies = [
 
 [[package]]
 name = "kimojio-tls"
-version = "0.13.2"
+version = "0.14.0"
 dependencies = [
  "cc",
  "rustix-uring",

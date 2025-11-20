@@ -1,6 +1,9 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+// Allow the crate to refer to itself as `::kimojio` for macro expansion
+extern crate self as kimojio;
+
 use std::rc::Rc;
 use std::task::Waker;
 

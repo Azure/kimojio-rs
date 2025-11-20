@@ -1,3 +1,11 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
+//! Kimojio procedural macros.
+//!
+//! These macros provide convenient attributes for defining async main functions and tests
+//! that run within the kimojio runtime.
+
 use proc_macro::TokenStream;
 use quote::quote;
 use syn::{ItemFn, ReturnType, parse_macro_input};
@@ -102,7 +110,7 @@ pub fn main(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// Marks an async test to be run with the kimojio runtime.
 ///
 /// This macro transforms an async test function into a regular test function
-/// that uses `crate::run_test` to execute the async code.
+/// that uses `::kimojio::run_test` to execute the async code.
 ///
 /// # Example
 ///
@@ -118,7 +126,7 @@ pub fn main(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// ```ignore
 /// #[test]
 /// fn my_test() {
-///     crate::run_test("my_test", async {
+///     ::kimojio::run_test("my_test", async {
 ///         // async test code
 ///     })
 /// }
@@ -155,7 +163,7 @@ pub fn test(_attr: TokenStream, item: TokenStream) -> TokenStream {
         #[test]
         #(#attrs)*
         #vis fn #fn_name() {
-            crate::run_test(#fn_name_str, async #body)
+            ::kimojio::run_test(#fn_name_str, async #body)
         }
     };
 

@@ -90,6 +90,8 @@ use uuid::Uuid;
 
 use crate::configuration::BusyPoll;
 
+pub use kimojio_macros::{main, test};
+
 const MAX_TASK_STACK_SIZE: usize = 65536;
 
 enum CompletionState {

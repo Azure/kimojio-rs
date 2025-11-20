@@ -144,84 +144,78 @@ mod test {
         operations::{self, spawn_task},
     };
 
-    #[test]
-    fn async_lock_test() {
-        crate::run_test("async_lock_test", async {
-            let l: Rc<AsyncLock<usize>> = Default::default();
-            let mut l_ref = l.lock().await.unwrap();
-            let task = {
-                let l = l.clone();
-                operations::spawn_task(async move {
-                    let mut l_ref = l.lock().await.unwrap();
-                    *l_ref += 1;
-                })
-            };
+    #[crate::test]
+    async fn async_lock_test() {
+        let l: Rc<AsyncLock<usize>> = Default::default();
+        let mut l_ref = l.lock().await.unwrap();
+        let task = {
+            let l = l.clone();
+            operations::spawn_task(async move {
+                let mut l_ref = l.lock().await.unwrap();
+                *l_ref += 1;
+            })
+        };
 
-            for _ in 0..100 {
-                operations::yield_io().await;
-            }
+        for _ in 0..100 {
+            operations::yield_io().await;
+        }
 
-            *l_ref = 100;
-            drop(l_ref);
-            task.await.unwrap();
+        *l_ref = 100;
+        drop(l_ref);
+        task.await.unwrap();
 
-            assert_eq!(*l.lock().await.unwrap(), 101);
-        })
+        assert_eq!(*l.lock().await.unwrap(), 101);
     }
 
-    #[test]
-    fn async_timeout_test() {
-        crate::run_test("async_timeout_test", async {
-            let l = Rc::new(AsyncLock::new(0));
-            let l2 = l.clone();
-            let ready = Rc::new(AsyncEvent::new());
-            let ready2 = ready.clone();
-            let done = Rc::new(AsyncEvent::new());
-            let done2 = done.clone();
-            let other = spawn_task(async move {
-                let guard = l2.lock().await.unwrap();
-                ready2.set();
-                done2.wait().await.unwrap();
-                drop(guard);
-            });
-            ready.wait().await.unwrap();
-            let wait = l.lock_with_timeout(Some(Duration::from_millis(1))).await;
-            assert!(wait.is_err());
-            done.set();
-            other.await.unwrap();
-            let wait = l
-                .lock_with_timeout(Some(Duration::from_millis(1)))
-                .await
-                .unwrap();
-            assert_eq!(*wait, 0);
-        })
+    #[crate::test]
+    async fn async_timeout_test() {
+        let l = Rc::new(AsyncLock::new(0));
+        let l2 = l.clone();
+        let ready = Rc::new(AsyncEvent::new());
+        let ready2 = ready.clone();
+        let done = Rc::new(AsyncEvent::new());
+        let done2 = done.clone();
+        let other = spawn_task(async move {
+            let guard = l2.lock().await.unwrap();
+            ready2.set();
+            done2.wait().await.unwrap();
+            drop(guard);
+        });
+        ready.wait().await.unwrap();
+        let wait = l.lock_with_timeout(Some(Duration::from_millis(1))).await;
+        assert!(wait.is_err());
+        done.set();
+        other.await.unwrap();
+        let wait = l
+            .lock_with_timeout(Some(Duration::from_millis(1)))
+            .await
+            .unwrap();
+        assert_eq!(*wait, 0);
     }
 
     // Parallelism is at the future level, not task level, so checking
     // current task to detect recursive lock does not work in this case.
     // This test exists to verify that any future recursive lock check
     // implementation does not regress future parallelism.
-    #[test]
-    fn lock_from_parallel_futures() {
-        crate::run_test("lock_from_parallel_futures", async {
-            let l1 = Rc::new(AsyncLock::new(0));
-            let l2 = l1.clone();
-            let l3 = l2.clone();
-            let fut1 = async move {
-                let mut guard = l1.lock().await.unwrap();
-                operations::sleep(std::time::Duration::from_millis(100))
-                    .await
-                    .unwrap();
-                *guard += 2;
-                drop(guard);
-            };
-            let fut2 = async move {
-                let mut guard = l2.lock().await.unwrap();
-                *guard += 1;
-                drop(guard);
-            };
-            futures::join!(fut1, fut2);
-            assert_eq!(*l3.lock().await.unwrap(), 3);
-        })
+    #[crate::test]
+    async fn lock_from_parallel_futures() {
+        let l1 = Rc::new(AsyncLock::new(0));
+        let l2 = l1.clone();
+        let l3 = l2.clone();
+        let fut1 = async move {
+            let mut guard = l1.lock().await.unwrap();
+            operations::sleep(std::time::Duration::from_millis(100))
+                .await
+                .unwrap();
+            *guard += 2;
+            drop(guard);
+        };
+        let fut2 = async move {
+            let mut guard = l2.lock().await.unwrap();
+            *guard += 1;
+            drop(guard);
+        };
+        futures::join!(fut1, fut2);
+        assert_eq!(*l3.lock().await.unwrap(), 3);
     }
 }

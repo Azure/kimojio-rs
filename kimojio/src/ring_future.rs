@@ -402,33 +402,29 @@ mod test {
     use crate::{AsyncEvent, Errno, OwnedFd, operations};
     use std::rc::Rc;
 
-    #[test]
-    fn select_test() {
+    #[crate::test]
+    async fn select_test() {
         use futures::select;
-        crate::run_test("select_test", async {
-            let mut f1 = crate::operations::yield_io();
-            let mut f2 = crate::operations::yield_io();
-            let mut f3 = crate::operations::yield_io();
-            let mut sum = 0;
-            loop {
-                sum += select! {
-                    _ = f1 => 1,
-                    _ = f2 => 2,
-                    _ = f3 => 4,
-                    complete => break,
-                };
-            }
-            assert_eq!(7, sum);
-        })
+        let mut f1 = crate::operations::yield_io();
+        let mut f2 = crate::operations::yield_io();
+        let mut f3 = crate::operations::yield_io();
+        let mut sum = 0;
+        loop {
+            sum += select! {
+                _ = f1 => 1,
+                _ = f2 => 2,
+                _ = f3 => 4,
+                complete => break,
+            };
+        }
+        assert_eq!(7, sum);
     }
 
-    #[test]
-    fn sleep_test() {
-        crate::run_test("sleep_test", async {
-            crate::operations::sleep(std::time::Duration::from_secs(0))
-                .await
-                .unwrap()
-        })
+    #[crate::test]
+    async fn sleep_test() {
+        crate::operations::sleep(std::time::Duration::from_secs(0))
+            .await
+            .unwrap()
     }
 
     struct TestFuture {
@@ -442,87 +438,81 @@ mod test {
         }
     }
 
-    #[test]
-    fn complete_future_on_different_task_test() {
+    #[crate::test]
+    async fn complete_future_on_different_task_test() {
         use futures::{FutureExt, select};
-        crate::run_test("complete_future_on_different_task_test", async {
-            let (pipe1, pipe2) = crate::pipe::bipipe();
+        let (pipe1, pipe2) = crate::pipe::bipipe();
 
-            let mut fut1 = Box::pin(
-                async move {
-                    let mut test = TestFuture {
-                        fd: pipe1,
-                        buf: [0; 1],
-                    };
-                    test.read().await
-                }
-                .fuse(),
-            );
+        let mut fut1 = Box::pin(
+            async move {
+                let mut test = TestFuture {
+                    fd: pipe1,
+                    buf: [0; 1],
+                };
+                test.read().await
+            }
+            .fuse(),
+        );
 
-            let fut2 = Box::pin(crate::operations::nop());
+        let fut2 = Box::pin(crate::operations::nop());
 
-            // this will poll fut1 but complete fut2
-            let _ignored = select! {
-                _a = fut1 => 1,
-                _b = fut2.fuse() => 2,
-            };
+        // this will poll fut1 but complete fut2
+        let _ignored = select! {
+            _a = fut1 => 1,
+            _b = fut2.fuse() => 2,
+        };
 
-            // now transfer fut1 into a task to complete it for real.
-            let mut task = {
-                let ready = Rc::new(AsyncEvent::new());
-                let ready_copy = ready.clone();
-                let task = operations::spawn_task(async move {
-                    ready.set();
-                    let result = fut1.await.unwrap();
-                    assert_eq!(result, 1, "expected to read 1 byte");
-                });
-                ready_copy.wait().await.unwrap();
-                task
-            };
+        // now transfer fut1 into a task to complete it for real.
+        let mut task = {
+            let ready = Rc::new(AsyncEvent::new());
+            let ready_copy = ready.clone();
+            let task = operations::spawn_task(async move {
+                ready.set();
+                let result = fut1.await.unwrap();
+                assert_eq!(result, 1, "expected to read 1 byte");
+            });
+            ready_copy.wait().await.unwrap();
+            task
+        };
 
-            operations::write(&pipe2, b"1").await.unwrap();
+        operations::write(&pipe2, b"1").await.unwrap();
 
-            let joined = select! {
-                _ = task => true,
-                _ = operations::sleep(std::time::Duration::from_secs(5)).fuse() => false,
-            };
+        let joined = select! {
+            _ = task => true,
+            _ = operations::sleep(std::time::Duration::from_secs(5)).fuse() => false,
+        };
 
-            assert!(joined);
-        })
+        assert!(joined);
     }
 
-    #[test]
-    fn futures_unordered_test() {
-        crate::run_test("futures_unordered_test", async {
-            use futures::stream::FuturesUnordered;
-            use futures::stream::StreamExt;
-            let mut futures = FuturesUnordered::new();
-            futures.push(crate::operations::nop());
-            futures.push(crate::operations::nop());
-            StreamExt::next(&mut futures).await.unwrap().unwrap();
-            StreamExt::next(&mut futures).await.unwrap().unwrap();
-            assert!(StreamExt::next(&mut futures).await.is_none());
-        })
+    #[crate::test]
+    async fn futures_unordered_test() {
+        use futures::stream::FuturesUnordered;
+        use futures::stream::StreamExt;
+        let mut futures = FuturesUnordered::new();
+        futures.push(crate::operations::nop());
+        futures.push(crate::operations::nop());
+        StreamExt::next(&mut futures).await.unwrap().unwrap();
+        StreamExt::next(&mut futures).await.unwrap().unwrap();
+        assert!(StreamExt::next(&mut futures).await.is_none());
     }
 
-    #[test]
-    fn futures_unordered_event_test() {
-        crate::run_test("futures_unordered_event_test", async {
-            use futures::stream::FuturesUnordered;
-            use futures::stream::StreamExt;
-            let event = Rc::new(AsyncEvent::new());
-            let mut futures = FuturesUnordered::new();
-            futures.push(event.wait());
-            let task = {
-                let event = event.clone();
-                operations::spawn_task(async move {
-                    event.set();
-                })
-            };
-            StreamExt::next(&mut futures).await.unwrap().unwrap();
-            assert!(StreamExt::next(&mut futures).await.is_none());
-            task.await.unwrap();
-        })
+    #[crate::test]
+    async fn futures_unordered_event_test() {
+        use futures::stream::FuturesUnordered;
+        use futures::stream::StreamExt;
+        let event = Rc::new(AsyncEvent::new());
+        let mut futures = FuturesUnordered::new();
+        futures.push(event.wait());
+        let task = {
+            let event = event.clone();
+            operations::spawn_task(async move {
+                event.set();
+            })
+        };
+        StreamExt::next(&mut futures).await.unwrap().unwrap();
+        assert!(StreamExt::next(&mut futures).await.is_none());
+        task.await.unwrap();
     }
 
     struct WakerFuture;
@@ -538,13 +528,11 @@ mod test {
         }
     }
 
-    #[test]
-    fn schedule_completed_test() {
-        crate::run_test("schedule_completed_test", async {
-            // This will schedule this task without suspending.  We then
-            // immediatley complete this task by returning resulting in this
-            // task being schedule but in the Complete state.
-            WakerFuture.await;
-        })
+    #[crate::test]
+    async fn schedule_completed_test() {
+        // This will schedule this task without suspending.  We then
+        // immediatley complete this task by returning resulting in this
+        // task being schedule but in the Complete state.
+        WakerFuture.await;
     }
 }

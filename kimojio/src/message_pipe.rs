@@ -434,532 +434,484 @@ impl<T: Send, R: Send> Clone for MessagePipe<T, R> {
 #[cfg(test)]
 mod test {
     use super::{IdMessagePipe, MessagePipe, make_message_pipe, make_message_pipe_oneway_sync};
-    use crate::{MessagePipeReceiver, MessagePipeSender, make_message_pipe_oneway, run_test};
+    use crate::{MessagePipeReceiver, MessagePipeSender, make_message_pipe_oneway};
     use futures::{FutureExt, future::FusedFuture};
     use std::time::Duration;
 
-    #[test]
-    fn test_message_pipe_behavior_send() {
-        run_test("test_message_pipe_behavior_send", async move {
-            let (tx, rx): (MessagePipeSender<String>, MessagePipeReceiver<String>) =
-                make_message_pipe_oneway().await.unwrap();
+    #[crate::test]
+    async fn test_message_pipe_behavior_send() {
+        let (tx, rx): (MessagePipeSender<String>, MessagePipeReceiver<String>) =
+            make_message_pipe_oneway().await.unwrap();
 
-            let rx2 = rx.clone();
-            drop(rx);
-            drop(rx2);
+        let rx2 = rx.clone();
+        drop(rx);
+        drop(rx2);
 
-            match tx.send_message(Box::new("message".to_string())).await {
-                Ok(_) => panic!("Successfully sent message, should have errored out"),
-                Err(err) => println!("Errored out {err:?} while sending message, as expected"),
-            }
-        })
+        match tx.send_message(Box::new("message".to_string())).await {
+            Ok(_) => panic!("Successfully sent message, should have errored out"),
+            Err(err) => println!("Errored out {err:?} while sending message, as expected"),
+        }
     }
 
-    #[test]
-    fn test_message_pipe_behavior_recv() {
-        run_test("test_message_pipe_behavior_recv", async move {
-            let (tx, rx): (MessagePipeSender<String>, MessagePipeReceiver<String>) =
-                make_message_pipe_oneway().await.unwrap();
+    #[crate::test]
+    async fn test_message_pipe_behavior_recv() {
+        let (tx, rx): (MessagePipeSender<String>, MessagePipeReceiver<String>) =
+            make_message_pipe_oneway().await.unwrap();
 
-            let tx2 = tx.clone();
+        let tx2 = tx.clone();
 
-            drop(tx);
-            drop(tx2);
+        drop(tx);
+        drop(tx2);
 
-            match rx.recv_message().await {
-                Ok(_) => panic!("Successfully received message, should have errored out"),
-                Err(err) => println!("Errored out {err:?} while receiving message, as expected"),
-            }
-        })
+        match rx.recv_message().await {
+            Ok(_) => panic!("Successfully received message, should have errored out"),
+            Err(err) => println!("Errored out {err:?} while receiving message, as expected"),
+        }
     }
 
-    #[test]
-    fn test_make_message_pipe() {
-        run_test("test_make_message_pipe", async move {
-            let (pipe1, pipe2): (MessagePipe<String, i32>, MessagePipe<i32, String>) =
-                make_message_pipe();
-
-            // Test bidirectional communication
-            let send_task = crate::operations::spawn_task(async move {
-                pipe1
-                    .send_message(Box::new("hello".to_string()))
-                    .await
-                    .unwrap();
-                let response = pipe1.recv_message().await.unwrap();
-                assert_eq!(*response, 42);
-            });
-
-            let recv_task = crate::operations::spawn_task(async move {
-                let message = pipe2.recv_message().await.unwrap();
-                assert_eq!(*message, "hello");
-                pipe2.send_message(Box::new(42)).await.unwrap();
-            });
-
-            send_task.await.unwrap();
-            recv_task.await.unwrap();
-        })
-    }
-
-    #[test]
-    fn test_make_message_pipe_oneway_sync() {
-        run_test("test_make_message_pipe_oneway_sync", async move {
-            let (tx, rx): (MessagePipeSender<String>, MessagePipeReceiver<String>) =
-                make_message_pipe_oneway_sync().unwrap();
-
-            let send_task = crate::operations::spawn_task(async move {
-                tx.send_message(Box::new("sync test".to_string()))
-                    .await
-                    .unwrap();
-            });
-
-            let recv_task = crate::operations::spawn_task(async move {
-                let message = rx.recv_message().await.unwrap();
-                assert_eq!(*message, "sync test");
-            });
-
-            send_task.await.unwrap();
-            recv_task.await.unwrap();
-        })
-    }
-
-    #[test]
-    fn test_message_pipe_new_and_into_inner() {
-        run_test("test_message_pipe_new_and_into_inner", async move {
-            let (pipe1, pipe2) = crate::pipe::bipipe();
-            let msg_pipe: MessagePipe<String, i32> = MessagePipe::new(pipe1);
-
-            // Test into_inner
-            let fd = msg_pipe.into_inner();
-
-            // Create new message pipe and test basic communication
-            let msg_pipe2: MessagePipe<i32, String> = MessagePipe::new(pipe2);
-            let msg_pipe1: MessagePipe<String, i32> = MessagePipe::new(fd);
-
-            let send_task = crate::operations::spawn_task(async move {
-                msg_pipe1
-                    .send_message(Box::new("test".to_string()))
-                    .await
-                    .unwrap();
-            });
-
-            let recv_task = crate::operations::spawn_task(async move {
-                let message = msg_pipe2.recv_message().await.unwrap();
-                assert_eq!(*message, "test");
-            });
-
-            send_task.await.unwrap();
-            recv_task.await.unwrap();
-        })
-    }
-
-    #[test]
-    fn test_message_pipe_recv_with_timeout() {
-        run_test("test_message_pipe_recv_with_timeout", async move {
-            let (pipe1, pipe2): (MessagePipe<String, i32>, MessagePipe<i32, String>) =
-                make_message_pipe();
-
-            // Test timeout
-            let timeout_result = pipe1
-                .recv_message_with_timeout(Some(Duration::from_millis(10)))
-                .await;
-            assert!(timeout_result.is_err());
-
-            // Test successful receive with timeout
-            let send_task = crate::operations::spawn_task(async move {
-                pipe2.send_message(Box::new(123)).await.unwrap();
-            });
-
-            let recv_task = crate::operations::spawn_task(async move {
-                let message = pipe1
-                    .recv_message_with_timeout(Some(Duration::from_millis(100)))
-                    .await
-                    .unwrap();
-                assert_eq!(*message, 123);
-            });
-
-            send_task.await.unwrap();
-            recv_task.await.unwrap();
-        })
-    }
-
-    #[test]
-    fn test_message_pipe_sync_operations() {
-        run_test("test_message_pipe_sync_operations", async move {
-            let (pipe1, pipe2): (MessagePipe<String, i32>, MessagePipe<i32, String>) =
-                make_message_pipe();
-
-            let sync_task = std::thread::spawn(move || {
-                // Test sync send
-                pipe1
-                    .send_message_sync(Box::new("sync message".to_string()))
-                    .unwrap();
-
-                // Test sync receive
-                let response = pipe1.recv_message_sync().unwrap();
-                assert_eq!(*response, 456);
-            });
-
-            let async_task = crate::operations::spawn_task(async move {
-                // Receive sync message
-                let message = pipe2.recv_message().await.unwrap();
-                assert_eq!(*message, "sync message");
-
-                // Send response
-                pipe2.send_message(Box::new(456)).await.unwrap();
-            });
-
-            async_task.await.unwrap();
-            sync_task.join().unwrap();
-        })
-    }
-
-    #[test]
-    fn test_message_pipe_sender_new_sync_and_into_inner() {
-        run_test(
-            "test_message_pipe_sender_new_sync_and_into_inner",
-            async move {
-                let (pipe1, pipe2) = crate::pipe::bipipe();
-                let sender: MessagePipeSender<String> = MessagePipeSender::new_sync(pipe1).unwrap();
-
-                // Test into_inner
-                let fd = sender.into_inner();
-
-                // Create receiver and test communication
-                let receiver: MessagePipeReceiver<String> =
-                    MessagePipeReceiver::new(pipe2).await.unwrap();
-                let sender: MessagePipeSender<String> = MessagePipeSender::new(fd).await.unwrap();
-
-                let send_task = crate::operations::spawn_task(async move {
-                    sender
-                        .send_message(Box::new("test sender".to_string()))
-                        .await
-                        .unwrap();
-                });
-
-                let recv_task = crate::operations::spawn_task(async move {
-                    let message = receiver.recv_message().await.unwrap();
-                    assert_eq!(*message, "test sender");
-                });
-
-                send_task.await.unwrap();
-                recv_task.await.unwrap();
-            },
-        )
-    }
-
-    #[test]
-    fn test_message_pipe_sender_sync_operations() {
-        run_test("test_message_pipe_sender_sync_operations", async move {
-            let (tx, rx): (MessagePipeSender<String>, MessagePipeReceiver<String>) =
-                make_message_pipe_oneway_sync().unwrap();
-
-            let sync_task = std::thread::spawn(move || {
-                tx.send_message_sync(Box::new("sync sender test".to_string()))
-                    .unwrap();
-            });
-
-            let async_task = crate::operations::spawn_task(async move {
-                let message = rx.recv_message().await.unwrap();
-                assert_eq!(*message, "sync sender test");
-            });
-
-            sync_task.join().unwrap();
-            async_task.await.unwrap();
-        })
-    }
-
-    #[test]
-    fn test_message_pipe_receiver_new_sync_and_into_inner() {
-        run_test(
-            "test_message_pipe_receiver_new_sync_and_into_inner",
-            async move {
-                let (pipe1, pipe2) = crate::pipe::bipipe();
-                let receiver: MessagePipeReceiver<String> =
-                    MessagePipeReceiver::new_sync(pipe2).unwrap();
-
-                // Test into_inner
-                let fd = receiver.into_inner();
-
-                // Create sender and test communication
-                let sender: MessagePipeSender<String> =
-                    MessagePipeSender::new(pipe1).await.unwrap();
-                let receiver: MessagePipeReceiver<String> =
-                    MessagePipeReceiver::new(fd).await.unwrap();
-
-                let send_task = crate::operations::spawn_task(async move {
-                    sender
-                        .send_message(Box::new("test receiver".to_string()))
-                        .await
-                        .unwrap();
-                });
-
-                let recv_task = crate::operations::spawn_task(async move {
-                    let message = receiver.recv_message().await.unwrap();
-                    assert_eq!(*message, "test receiver");
-                });
-
-                send_task.await.unwrap();
-                recv_task.await.unwrap();
-            },
-        )
-    }
-
-    #[test]
-    fn test_message_pipe_receiver_recv_with_timeout() {
-        run_test("test_message_pipe_receiver_recv_with_timeout", async move {
-            let (tx, rx): (MessagePipeSender<String>, MessagePipeReceiver<String>) =
-                make_message_pipe_oneway().await.unwrap();
-
-            // Test timeout
-            let timeout_result = rx
-                .recv_message_with_timeout(Some(Duration::from_millis(10)))
-                .await;
-            assert!(timeout_result.is_err());
-
-            // Test successful receive with timeout
-            let send_task = crate::operations::spawn_task(async move {
-                tx.send_message(Box::new("timeout test".to_string()))
-                    .await
-                    .unwrap();
-            });
-
-            let recv_task = crate::operations::spawn_task(async move {
-                let message = rx
-                    .recv_message_with_timeout(Some(Duration::from_millis(100)))
-                    .await
-                    .unwrap();
-                assert_eq!(*message, "timeout test");
-            });
-
-            send_task.await.unwrap();
-            recv_task.await.unwrap();
-        })
-    }
-
-    #[test]
-    fn test_id_message_pipe_new_and_into_inner() {
-        run_test("test_id_message_pipe_new_and_into_inner", async move {
-            let (pipe1, pipe2) = crate::pipe::bipipe();
-            let id_pipe: IdMessagePipe<String, i32> = IdMessagePipe::new(pipe1);
-
-            // Test into_inner
-            let fd = id_pipe.into_inner();
-
-            // Create new id message pipes and test communication
-            let id_pipe1: IdMessagePipe<String, i32> = IdMessagePipe::new(fd);
-            let id_pipe2: IdMessagePipe<i32, String> = IdMessagePipe::new(pipe2);
-
-            let send_task = crate::operations::spawn_task(async move {
-                id_pipe1
-                    .send_message(123, Box::new("id test".to_string()))
-                    .await
-                    .unwrap();
-            });
-
-            let recv_task = crate::operations::spawn_task(async move {
-                let (id, message) = id_pipe2.recv_message().await.unwrap();
-                assert_eq!(id, 123);
-                assert_eq!(*message, "id test");
-            });
-
-            send_task.await.unwrap();
-            recv_task.await.unwrap();
-        })
-    }
-
-    #[test]
-    fn test_id_message_pipe_async_operations() {
-        run_test("test_id_message_pipe_async_operations", async move {
-            let (pipe1, pipe2) = crate::pipe::bipipe();
-            let id_pipe1: IdMessagePipe<String, i32> = IdMessagePipe::new(pipe1);
-            let id_pipe2: IdMessagePipe<i32, String> = IdMessagePipe::new(pipe2);
-
-            let send_task = crate::operations::spawn_task(async move {
-                id_pipe1
-                    .send_message(456, Box::new("async id test".to_string()))
-                    .await
-                    .unwrap();
-                let (response_id, response) = id_pipe1.recv_message().await.unwrap();
-                assert_eq!(response_id, 789);
-                assert_eq!(*response, 999);
-            });
-
-            let recv_task = crate::operations::spawn_task(async move {
-                let (id, message) = id_pipe2.recv_message().await.unwrap();
-                assert_eq!(id, 456);
-                assert_eq!(*message, "async id test");
-
-                id_pipe2.send_message(789, Box::new(999)).await.unwrap();
-            });
-
-            send_task.await.unwrap();
-            recv_task.await.unwrap();
-        })
-    }
-
-    #[test]
-    fn test_id_message_pipe_sync_operations() {
-        run_test("test_id_message_pipe_sync_operations", async move {
-            let (pipe1, pipe2) = crate::pipe::bipipe();
-            let id_pipe1: IdMessagePipe<String, i32> = IdMessagePipe::new(pipe1);
-            let id_pipe2: IdMessagePipe<i32, String> = IdMessagePipe::new(pipe2);
-
-            let sync_task = std::thread::spawn(move || {
-                // Test sync send
-                id_pipe1
-                    .send_message_sync(321, Box::new("sync id test".to_string()))
-                    .unwrap();
-
-                // Test sync receive
-                let (response_id, response) = id_pipe1.recv_message_sync().unwrap();
-                assert_eq!(response_id, 654);
-                assert_eq!(*response, 888);
-            });
-
-            let async_task = crate::operations::spawn_task(async move {
-                // Receive sync message
-                let (id, message) = id_pipe2.recv_message().await.unwrap();
-                assert_eq!(id, 321);
-                assert_eq!(*message, "sync id test");
-
-                // Send response
-                id_pipe2.send_message(654, Box::new(888)).await.unwrap();
-            });
-
-            async_task.await.unwrap();
-            sync_task.join().unwrap();
-        })
-    }
-
-    #[test]
-    fn test_id_message_pipe_multiple_instances() {
-        run_test("test_id_message_pipe_multiple_instances", async move {
-            let (pipe1, pipe2) = crate::pipe::bipipe();
-            let (pipe3, pipe4) = crate::pipe::bipipe();
-
-            let id_pipe1: IdMessagePipe<String, i32> = IdMessagePipe::new(pipe1);
-            let id_pipe2: IdMessagePipe<i32, String> = IdMessagePipe::new(pipe2);
-            let id_pipe3: IdMessagePipe<String, i32> = IdMessagePipe::new(pipe3);
-            let id_pipe4: IdMessagePipe<i32, String> = IdMessagePipe::new(pipe4);
-
-            let send_task1 = crate::operations::spawn_task(async move {
-                id_pipe1
-                    .send_message(111, Box::new("test 1".to_string()))
-                    .await
-                    .unwrap();
-            });
-
-            let send_task2 = crate::operations::spawn_task(async move {
-                id_pipe3
-                    .send_message(222, Box::new("test 2".to_string()))
-                    .await
-                    .unwrap();
-            });
-
-            let recv_task1 = crate::operations::spawn_task(async move {
-                let (id, message) = id_pipe2.recv_message().await.unwrap();
-                assert_eq!(id, 111);
-                assert_eq!(*message, "test 1");
-            });
-
-            let recv_task2 = crate::operations::spawn_task(async move {
-                let (id, message) = id_pipe4.recv_message().await.unwrap();
-                assert_eq!(id, 222);
-                assert_eq!(*message, "test 2");
-            });
-
-            send_task1.await.unwrap();
-            send_task2.await.unwrap();
-            recv_task1.await.unwrap();
-            recv_task2.await.unwrap();
-        })
-    }
-
-    #[test]
-    fn test_recv_message_future_is_terminated() {
-        run_test("test_recv_message_future_is_terminated", async move {
-            let (tx, rx): (MessagePipeSender<String>, MessagePipeReceiver<String>) =
-                make_message_pipe_oneway().await.unwrap();
-
-            let future = rx.recv_message().fuse();
-
-            // Check that future is not terminated initially
-            assert!(!future.is_terminated());
-
-            // Send a message
-            tx.send_message(Box::new("terminate test".to_string()))
+    #[crate::test]
+    async fn test_make_message_pipe() {
+        let (pipe1, pipe2): (MessagePipe<String, i32>, MessagePipe<i32, String>) =
+            make_message_pipe();
+
+        // Test bidirectional communication
+        let send_task = crate::operations::spawn_task(async move {
+            pipe1
+                .send_message(Box::new("hello".to_string()))
                 .await
                 .unwrap();
+            let response = pipe1.recv_message().await.unwrap();
+            assert_eq!(*response, 42);
+        });
 
-            // Complete the future
-            let message = future.await.unwrap();
-            assert_eq!(*message, "terminate test");
-        })
+        let recv_task = crate::operations::spawn_task(async move {
+            let message = pipe2.recv_message().await.unwrap();
+            assert_eq!(*message, "hello");
+            pipe2.send_message(Box::new(42)).await.unwrap();
+        });
+
+        send_task.await.unwrap();
+        recv_task.await.unwrap();
     }
 
-    #[test]
-    fn test_message_pipe_clone() {
-        run_test("test_message_pipe_clone", async move {
-            let (pipe1, pipe2): (MessagePipe<String, i32>, MessagePipe<i32, String>) =
-                make_message_pipe();
-            let pipe1_clone = pipe1.clone();
+    #[crate::test]
+    async fn test_make_message_pipe_oneway_sync() {
+        let (tx, rx): (MessagePipeSender<String>, MessagePipeReceiver<String>) =
+            make_message_pipe_oneway_sync().unwrap();
 
-            let send_task = crate::operations::spawn_task(async move {
-                pipe1_clone
-                    .send_message(Box::new("clone test".to_string()))
-                    .await
-                    .unwrap();
-            });
+        let send_task = crate::operations::spawn_task(async move {
+            tx.send_message(Box::new("sync test".to_string()))
+                .await
+                .unwrap();
+        });
 
-            let recv_task = crate::operations::spawn_task(async move {
-                let message = pipe2.recv_message().await.unwrap();
-                assert_eq!(*message, "clone test");
-            });
+        let recv_task = crate::operations::spawn_task(async move {
+            let message = rx.recv_message().await.unwrap();
+            assert_eq!(*message, "sync test");
+        });
 
-            send_task.await.unwrap();
-            recv_task.await.unwrap();
-        })
+        send_task.await.unwrap();
+        recv_task.await.unwrap();
     }
 
-    #[test]
-    fn test_message_pipe_error_handling() {
-        run_test("test_message_pipe_error_handling", async move {
-            let (pipe1, _pipe2): (MessagePipe<String, i32>, MessagePipe<i32, String>) =
-                make_message_pipe();
+    #[crate::test]
+    async fn test_message_pipe_new_and_into_inner() {
+        let (pipe1, pipe2) = crate::pipe::bipipe();
+        let msg_pipe: MessagePipe<String, i32> = MessagePipe::new(pipe1);
 
-            // Drop pipe2 to close the connection
-            drop(_pipe2);
+        // Test into_inner
+        let fd = msg_pipe.into_inner();
 
-            // Sending should fail
-            let result = pipe1
-                .send_message(Box::new("should fail".to_string()))
-                .await;
-            assert!(result.is_err());
+        // Create new message pipe and test basic communication
+        let msg_pipe2: MessagePipe<i32, String> = MessagePipe::new(pipe2);
+        let msg_pipe1: MessagePipe<String, i32> = MessagePipe::new(fd);
 
-            // Receiving should fail
-            let result = pipe1.recv_message().await;
-            assert!(result.is_err());
-        })
+        let send_task = crate::operations::spawn_task(async move {
+            msg_pipe1
+                .send_message(Box::new("test".to_string()))
+                .await
+                .unwrap();
+        });
+
+        let recv_task = crate::operations::spawn_task(async move {
+            let message = msg_pipe2.recv_message().await.unwrap();
+            assert_eq!(*message, "test");
+        });
+
+        send_task.await.unwrap();
+        recv_task.await.unwrap();
     }
 
-    #[test]
-    fn test_id_message_pipe_error_handling() {
-        run_test("test_id_message_pipe_error_handling", async move {
-            let (pipe1, _pipe2) = crate::pipe::bipipe();
-            let id_pipe: IdMessagePipe<String, i32> = IdMessagePipe::new(pipe1);
+    #[crate::test]
+    async fn test_message_pipe_recv_with_timeout() {
+        let (pipe1, pipe2): (MessagePipe<String, i32>, MessagePipe<i32, String>) =
+            make_message_pipe();
 
-            // Drop pipe2 to close the connection
-            drop(_pipe2);
+        // Test timeout
+        let timeout_result = pipe1
+            .recv_message_with_timeout(Some(Duration::from_millis(10)))
+            .await;
+        assert!(timeout_result.is_err());
 
-            // Sending should fail
-            let result = id_pipe
-                .send_message(123, Box::new("should fail".to_string()))
-                .await;
-            assert!(result.is_err());
+        // Test successful receive with timeout
+        let send_task = crate::operations::spawn_task(async move {
+            pipe2.send_message(Box::new(123)).await.unwrap();
+        });
 
-            // Receiving should fail
-            let result = id_pipe.recv_message().await;
-            assert!(result.is_err());
-        })
+        let recv_task = crate::operations::spawn_task(async move {
+            let message = pipe1
+                .recv_message_with_timeout(Some(Duration::from_millis(100)))
+                .await
+                .unwrap();
+            assert_eq!(*message, 123);
+        });
+
+        send_task.await.unwrap();
+        recv_task.await.unwrap();
+    }
+
+    #[crate::test]
+    async fn test_message_pipe_sync_operations() {
+        let (pipe1, pipe2): (MessagePipe<String, i32>, MessagePipe<i32, String>) =
+            make_message_pipe();
+
+        let sync_task = std::thread::spawn(move || {
+            // Test sync send
+            pipe1
+                .send_message_sync(Box::new("sync message".to_string()))
+                .unwrap();
+
+            // Test sync receive
+            let response = pipe1.recv_message_sync().unwrap();
+            assert_eq!(*response, 456);
+        });
+
+        let async_task = crate::operations::spawn_task(async move {
+            // Receive sync message
+            let message = pipe2.recv_message().await.unwrap();
+            assert_eq!(*message, "sync message");
+
+            // Send response
+            pipe2.send_message(Box::new(456)).await.unwrap();
+        });
+
+        async_task.await.unwrap();
+        sync_task.join().unwrap();
+    }
+
+    #[crate::test]
+    async fn test_message_pipe_sender_new_sync_and_into_inner() {
+        let (pipe1, pipe2) = crate::pipe::bipipe();
+        let sender: MessagePipeSender<String> = MessagePipeSender::new_sync(pipe1).unwrap();
+
+        // Test into_inner
+        let fd = sender.into_inner();
+
+        // Create receiver and test communication
+        let receiver: MessagePipeReceiver<String> = MessagePipeReceiver::new(pipe2).await.unwrap();
+        let sender: MessagePipeSender<String> = MessagePipeSender::new(fd).await.unwrap();
+
+        let send_task = crate::operations::spawn_task(async move {
+            sender
+                .send_message(Box::new("test sender".to_string()))
+                .await
+                .unwrap();
+        });
+
+        let recv_task = crate::operations::spawn_task(async move {
+            let message = receiver.recv_message().await.unwrap();
+            assert_eq!(*message, "test sender");
+        });
+
+        send_task.await.unwrap();
+        recv_task.await.unwrap();
+    }
+
+    #[crate::test]
+    async fn test_message_pipe_sender_sync_operations() {
+        let (tx, rx): (MessagePipeSender<String>, MessagePipeReceiver<String>) =
+            make_message_pipe_oneway_sync().unwrap();
+
+        let sync_task = std::thread::spawn(move || {
+            tx.send_message_sync(Box::new("sync sender test".to_string()))
+                .unwrap();
+        });
+
+        let async_task = crate::operations::spawn_task(async move {
+            let message = rx.recv_message().await.unwrap();
+            assert_eq!(*message, "sync sender test");
+        });
+
+        sync_task.join().unwrap();
+        async_task.await.unwrap();
+    }
+
+    #[crate::test]
+    async fn test_message_pipe_receiver_new_sync_and_into_inner() {
+        let (pipe1, pipe2) = crate::pipe::bipipe();
+        let receiver: MessagePipeReceiver<String> = MessagePipeReceiver::new_sync(pipe2).unwrap();
+
+        // Test into_inner
+        let fd = receiver.into_inner();
+
+        // Create sender and test communication
+        let sender: MessagePipeSender<String> = MessagePipeSender::new(pipe1).await.unwrap();
+        let receiver: MessagePipeReceiver<String> = MessagePipeReceiver::new(fd).await.unwrap();
+
+        let send_task = crate::operations::spawn_task(async move {
+            sender
+                .send_message(Box::new("test receiver".to_string()))
+                .await
+                .unwrap();
+        });
+
+        let recv_task = crate::operations::spawn_task(async move {
+            let message = receiver.recv_message().await.unwrap();
+            assert_eq!(*message, "test receiver");
+        });
+
+        send_task.await.unwrap();
+        recv_task.await.unwrap();
+    }
+
+    #[crate::test]
+    async fn test_message_pipe_receiver_recv_with_timeout() {
+        let (tx, rx): (MessagePipeSender<String>, MessagePipeReceiver<String>) =
+            make_message_pipe_oneway().await.unwrap();
+
+        // Test timeout
+        let timeout_result = rx
+            .recv_message_with_timeout(Some(Duration::from_millis(10)))
+            .await;
+        assert!(timeout_result.is_err());
+
+        // Test successful receive with timeout
+        let send_task = crate::operations::spawn_task(async move {
+            tx.send_message(Box::new("timeout test".to_string()))
+                .await
+                .unwrap();
+        });
+
+        let recv_task = crate::operations::spawn_task(async move {
+            let message = rx
+                .recv_message_with_timeout(Some(Duration::from_millis(100)))
+                .await
+                .unwrap();
+            assert_eq!(*message, "timeout test");
+        });
+
+        send_task.await.unwrap();
+        recv_task.await.unwrap();
+    }
+
+    #[crate::test]
+    async fn test_id_message_pipe_new_and_into_inner() {
+        let (pipe1, pipe2) = crate::pipe::bipipe();
+        let id_pipe: IdMessagePipe<String, i32> = IdMessagePipe::new(pipe1);
+
+        // Test into_inner
+        let fd = id_pipe.into_inner();
+
+        // Create new id message pipes and test communication
+        let id_pipe1: IdMessagePipe<String, i32> = IdMessagePipe::new(fd);
+        let id_pipe2: IdMessagePipe<i32, String> = IdMessagePipe::new(pipe2);
+
+        let send_task = crate::operations::spawn_task(async move {
+            id_pipe1
+                .send_message(123, Box::new("id test".to_string()))
+                .await
+                .unwrap();
+        });
+
+        let recv_task = crate::operations::spawn_task(async move {
+            let (id, message) = id_pipe2.recv_message().await.unwrap();
+            assert_eq!(id, 123);
+            assert_eq!(*message, "id test");
+        });
+
+        send_task.await.unwrap();
+        recv_task.await.unwrap();
+    }
+
+    #[crate::test]
+    async fn test_id_message_pipe_async_operations() {
+        let (pipe1, pipe2) = crate::pipe::bipipe();
+        let id_pipe1: IdMessagePipe<String, i32> = IdMessagePipe::new(pipe1);
+        let id_pipe2: IdMessagePipe<i32, String> = IdMessagePipe::new(pipe2);
+
+        let send_task = crate::operations::spawn_task(async move {
+            id_pipe1
+                .send_message(456, Box::new("async id test".to_string()))
+                .await
+                .unwrap();
+            let (response_id, response) = id_pipe1.recv_message().await.unwrap();
+            assert_eq!(response_id, 789);
+            assert_eq!(*response, 999);
+        });
+
+        let recv_task = crate::operations::spawn_task(async move {
+            let (id, message) = id_pipe2.recv_message().await.unwrap();
+            assert_eq!(id, 456);
+            assert_eq!(*message, "async id test");
+
+            id_pipe2.send_message(789, Box::new(999)).await.unwrap();
+        });
+
+        send_task.await.unwrap();
+        recv_task.await.unwrap();
+    }
+
+    #[crate::test]
+    async fn test_id_message_pipe_sync_operations() {
+        let (pipe1, pipe2) = crate::pipe::bipipe();
+        let id_pipe1: IdMessagePipe<String, i32> = IdMessagePipe::new(pipe1);
+        let id_pipe2: IdMessagePipe<i32, String> = IdMessagePipe::new(pipe2);
+
+        let sync_task = std::thread::spawn(move || {
+            // Test sync send
+            id_pipe1
+                .send_message_sync(321, Box::new("sync id test".to_string()))
+                .unwrap();
+
+            // Test sync receive
+            let (response_id, response) = id_pipe1.recv_message_sync().unwrap();
+            assert_eq!(response_id, 654);
+            assert_eq!(*response, 888);
+        });
+
+        let async_task = crate::operations::spawn_task(async move {
+            // Receive sync message
+            let (id, message) = id_pipe2.recv_message().await.unwrap();
+            assert_eq!(id, 321);
+            assert_eq!(*message, "sync id test");
+
+            // Send response
+            id_pipe2.send_message(654, Box::new(888)).await.unwrap();
+        });
+
+        async_task.await.unwrap();
+        sync_task.join().unwrap();
+    }
+
+    #[crate::test]
+    async fn test_id_message_pipe_multiple_instances() {
+        let (pipe1, pipe2) = crate::pipe::bipipe();
+        let (pipe3, pipe4) = crate::pipe::bipipe();
+
+        let id_pipe1: IdMessagePipe<String, i32> = IdMessagePipe::new(pipe1);
+        let id_pipe2: IdMessagePipe<i32, String> = IdMessagePipe::new(pipe2);
+        let id_pipe3: IdMessagePipe<String, i32> = IdMessagePipe::new(pipe3);
+        let id_pipe4: IdMessagePipe<i32, String> = IdMessagePipe::new(pipe4);
+
+        let send_task1 = crate::operations::spawn_task(async move {
+            id_pipe1
+                .send_message(111, Box::new("test 1".to_string()))
+                .await
+                .unwrap();
+        });
+
+        let send_task2 = crate::operations::spawn_task(async move {
+            id_pipe3
+                .send_message(222, Box::new("test 2".to_string()))
+                .await
+                .unwrap();
+        });
+
+        let recv_task1 = crate::operations::spawn_task(async move {
+            let (id, message) = id_pipe2.recv_message().await.unwrap();
+            assert_eq!(id, 111);
+            assert_eq!(*message, "test 1");
+        });
+
+        let recv_task2 = crate::operations::spawn_task(async move {
+            let (id, message) = id_pipe4.recv_message().await.unwrap();
+            assert_eq!(id, 222);
+            assert_eq!(*message, "test 2");
+        });
+
+        send_task1.await.unwrap();
+        send_task2.await.unwrap();
+        recv_task1.await.unwrap();
+        recv_task2.await.unwrap();
+    }
+
+    #[crate::test]
+    async fn test_recv_message_future_is_terminated() {
+        let (tx, rx): (MessagePipeSender<String>, MessagePipeReceiver<String>) =
+            make_message_pipe_oneway().await.unwrap();
+
+        let future = rx.recv_message().fuse();
+
+        // Check that future is not terminated initially
+        assert!(!future.is_terminated());
+
+        // Send a message
+        tx.send_message(Box::new("terminate test".to_string()))
+            .await
+            .unwrap();
+
+        // Complete the future
+        let message = future.await.unwrap();
+        assert_eq!(*message, "terminate test");
+    }
+
+    #[crate::test]
+    async fn test_message_pipe_clone() {
+        let (pipe1, pipe2): (MessagePipe<String, i32>, MessagePipe<i32, String>) =
+            make_message_pipe();
+        let pipe1_clone = pipe1.clone();
+
+        let send_task = crate::operations::spawn_task(async move {
+            pipe1_clone
+                .send_message(Box::new("clone test".to_string()))
+                .await
+                .unwrap();
+        });
+
+        let recv_task = crate::operations::spawn_task(async move {
+            let message = pipe2.recv_message().await.unwrap();
+            assert_eq!(*message, "clone test");
+        });
+
+        send_task.await.unwrap();
+        recv_task.await.unwrap();
+    }
+
+    #[crate::test]
+    async fn test_message_pipe_error_handling() {
+        let (pipe1, _pipe2): (MessagePipe<String, i32>, MessagePipe<i32, String>) =
+            make_message_pipe();
+
+        // Drop pipe2 to close the connection
+        drop(_pipe2);
+
+        // Sending should fail
+        let result = pipe1
+            .send_message(Box::new("should fail".to_string()))
+            .await;
+        assert!(result.is_err());
+
+        // Receiving should fail
+        let result = pipe1.recv_message().await;
+        assert!(result.is_err());
+    }
+
+    #[crate::test]
+    async fn test_id_message_pipe_error_handling() {
+        let (pipe1, _pipe2) = crate::pipe::bipipe();
+        let id_pipe: IdMessagePipe<String, i32> = IdMessagePipe::new(pipe1);
+
+        // Drop pipe2 to close the connection
+        drop(_pipe2);
+
+        // Sending should fail
+        let result = id_pipe
+            .send_message(123, Box::new("should fail".to_string()))
+            .await;
+        assert!(result.is_err());
+
+        // Receiving should fail
+        let result = id_pipe.recv_message().await;
+        assert!(result.is_err());
     }
 }

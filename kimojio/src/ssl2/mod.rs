@@ -405,7 +405,8 @@ mod tests {
         assert_eq!(shutdown_result, ShutdownResult::Received);
     }
 
-    async fn c_server_rs_client() {
+    #[crate::test]
+    async fn test_c_server_rs_client() {
         let cert_and_key_file_names =
             crate::tlscontext::test::test_utils::setup_default_certs().unwrap();
         let (client_fd, server_fd) = bipipe();
@@ -428,12 +429,8 @@ mod tests {
         rs_client(&cert_and_key_file_names, client_fd).await;
     }
 
-    #[test]
-    fn c_server_rs_client_test() {
-        crate::run_test("server_client", c_server_rs_client())
-    }
-
-    async fn rs_server_rs_client() {
+    #[crate::test]
+    async fn test_rs_server_rs_client() {
         let cert_and_key_file_names =
             crate::tlscontext::test::test_utils::setup_default_certs().unwrap();
         let (client_fd, server_fd) = bipipe();
@@ -444,12 +441,8 @@ mod tests {
         rs_client(&cert_and_key_file_names_clone, client_fd).await;
     }
 
-    #[test]
-    fn rs_server_rs_client_test() {
-        crate::run_test("rs_server_rs_client", rs_server_rs_client())
-    }
-
-    async fn c_client_rs_server() {
+    #[crate::test]
+    async fn test_c_client_rs_server() {
         let cert_and_key_file_names =
             crate::tlscontext::test::test_utils::setup_default_certs().unwrap();
         let (client_fd, server_fd) = bipipe();
@@ -470,10 +463,5 @@ mod tests {
         });
 
         rs_server(&cert_and_key_file_names, server_fd).await;
-    }
-
-    #[test]
-    fn c_client_rs_server_test() {
-        crate::run_test("c_client_rs_server", c_client_rs_server())
     }
 }

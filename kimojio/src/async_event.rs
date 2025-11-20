@@ -588,39 +588,37 @@ mod test {
         panic!();
     }
 
-    #[test]
-    fn async_event_select() {
-        crate::run_test("async_event_select", async {
-            let e1 = Rc::new(AsyncEvent::new());
-            let e2 = Rc::new(AsyncEvent::new());
+    #[crate::test]
+    async fn async_event_select() {
+        let e1 = Rc::new(AsyncEvent::new());
+        let e2 = Rc::new(AsyncEvent::new());
 
-            let task = {
-                let e1 = e1.clone();
-                let e2 = e2.clone();
-                operations::spawn_task(async move {
-                    let mut one = false;
-                    let mut two = false;
-                    let mut f1 = e1.wait();
-                    let mut f2 = e2.wait();
-                    while !one || !two {
-                        futures::select! {
-                            _ = f1 => {
-                                assert!(!one);
-                                one = true;
-                            },
-                            _ = f2 => {
-                                assert!(!two);
-                                two = true;
-                            },
-                        };
-                    }
-                })
-            };
+        let task = {
+            let e1 = e1.clone();
+            let e2 = e2.clone();
+            operations::spawn_task(async move {
+                let mut one = false;
+                let mut two = false;
+                let mut f1 = e1.wait();
+                let mut f2 = e2.wait();
+                while !one || !two {
+                    futures::select! {
+                        _ = f1 => {
+                            assert!(!one);
+                            one = true;
+                        },
+                        _ = f2 => {
+                            assert!(!two);
+                            two = true;
+                        },
+                    };
+                }
+            })
+        };
 
-            e1.set();
-            e2.set();
-            task.await.unwrap();
-        })
+        e1.set();
+        e2.set();
+        task.await.unwrap();
     }
 
     pin_project_lite::pin_project! {
@@ -657,36 +655,32 @@ mod test {
         }
     }
 
-    #[test]
-    fn async_event_await_same_future_twice() {
-        crate::run_test("async_event_await_same_future_twice", async {
-            let e1 = AsyncEvent::default();
-            let mut fut = e1.wait();
-            futures::select! {
-                _ = fut => panic!("should not complete"),
-                _ = operations::nop() => (),
-            }
-            futures::select! {
-                _ = fut => panic!("should not complete"),
-                _ = operations::nop() => (),
-            }
-            e1.set();
-            fut.await.unwrap();
-        })
+    #[crate::test]
+    async fn async_event_await_same_future_twice() {
+        let e1 = AsyncEvent::default();
+        let mut fut = e1.wait();
+        futures::select! {
+            _ = fut => panic!("should not complete"),
+            _ = operations::nop() => (),
+        }
+        futures::select! {
+            _ = fut => panic!("should not complete"),
+            _ = operations::nop() => (),
+        }
+        e1.set();
+        fut.await.unwrap();
     }
 
-    #[test]
+    #[crate::test]
     #[should_panic(expected = "It is not valid to poll a completed task.")]
-    fn async_event_await_awaited_event() {
-        crate::run_test("async_event_await_awaited_event", async {
-            let e1 = AsyncEvent::default();
-            e1.set();
-            let double = DoublePollFuture {
-                e: e1.wait(),
-                count: 0,
-            };
-            double.await;
-        })
+    async fn async_event_await_awaited_event() {
+        let e1 = AsyncEvent::default();
+        e1.set();
+        let double = DoublePollFuture {
+            e: e1.wait(),
+            count: 0,
+        };
+        double.await;
     }
 
     struct PollTwiceFuture<'a, F: Future + 'a> {
@@ -706,90 +700,84 @@ mod test {
         }
     }
 
-    #[test]
-    fn async_event_await_poll_pending() {
-        crate::run_test("async_event_await_poll_pending", async {
-            let e1 = Rc::new(AsyncEvent::default());
-            let e2: Rc<AsyncEvent> = e1.clone();
-            let t = operations::spawn_task(async move {
-                let twice = PollTwiceFuture {
-                    e: e2.wait(),
-                    _marker: PhantomData,
-                };
-                twice.await.unwrap();
-            });
-            operations::yield_io().await;
-            e1.set();
-            t.await.unwrap();
-        })
+    #[crate::test]
+    async fn async_event_await_poll_pending() {
+        let e1 = Rc::new(AsyncEvent::default());
+        let e2: Rc<AsyncEvent> = e1.clone();
+        let t = operations::spawn_task(async move {
+            let twice = PollTwiceFuture {
+                e: e2.wait(),
+                _marker: PhantomData,
+            };
+            twice.await.unwrap();
+        });
+        operations::yield_io().await;
+        e1.set();
+        t.await.unwrap();
     }
 
-    #[test]
-    fn async_event_await_rearm() {
-        crate::run_test("async_event_await_rearm", async {
-            let e1 = Rc::new(AsyncEvent::default());
-            let e2 = Rc::new(AsyncEvent::default());
-            let e3 = Rc::new(AsyncEvent::default());
-            let e4 = Rc::new(AsyncEvent::default());
+    #[crate::test]
+    async fn async_event_await_rearm() {
+        let e1 = Rc::new(AsyncEvent::default());
+        let e2 = Rc::new(AsyncEvent::default());
+        let e3 = Rc::new(AsyncEvent::default());
+        let e4 = Rc::new(AsyncEvent::default());
 
-            let e1_clone = e1.clone();
-            let e2_clone = e2.clone();
-            let e3_clone = e3.clone();
-            let e4_clone = e4.clone();
-            let f1 = &mut e1_clone.wait();
-            let f2 = &mut e2_clone.wait();
-            let f3 = &mut e3_clone.wait();
-            let f4 = &mut e4_clone.wait();
+        let e1_clone = e1.clone();
+        let e2_clone = e2.clone();
+        let e3_clone = e3.clone();
+        let e4_clone = e4.clone();
+        let f1 = &mut e1_clone.wait();
+        let f2 = &mut e2_clone.wait();
+        let f3 = &mut e3_clone.wait();
+        let f4 = &mut e4_clone.wait();
 
-            use futures::future::FusedFuture;
-            async fn do_select<F: FusedFuture + Future + Unpin>(
-                mut f1: &mut F,
-                mut f2: &mut F,
-                mut f3: &mut F,
-                mut f4: &mut F,
-            ) -> u32 {
-                futures::select!(
-                    _ = f1 => 1,
-                    _ = f2 => 2,
-                    _ = f3 => 3,
-                    _ = f4 => 4,
-                )
-            }
-
-            e4.set();
-            assert_eq!(do_select(f1, f2, f3, f4).await, 4);
-            e3.set();
-            assert_eq!(do_select(f1, f2, f3, f4).await, 3);
-            e2.set();
-            assert_eq!(do_select(f1, f2, f3, f4).await, 2);
-            e1.set();
-            assert_eq!(do_select(f1, f2, f3, f4).await, 1);
-        })
-    }
-
-    #[test]
-    fn async_event_await_drop() {
-        crate::run_test("async_event_await_drop", async {
-            let e = Rc::new(AsyncEvent::default());
-
-            let e1 = e.clone();
-            let e2 = e.clone();
-
-            let mut f1 = e1.wait();
-            let mut f2 = e2.wait();
-
-            // force poll of f1
+        use futures::future::FusedFuture;
+        async fn do_select<F: FusedFuture + Future + Unpin>(
+            mut f1: &mut F,
+            mut f2: &mut F,
+            mut f3: &mut F,
+            mut f4: &mut F,
+        ) -> u32 {
             futures::select!(
-                _ = f1 => (),
-                _ = f2 => (),
-                _ = operations::nop() => ()
-            );
+                _ = f1 => 1,
+                _ = f2 => 2,
+                _ = f3 => 3,
+                _ = f4 => 4,
+            )
+        }
 
-            drop(f1);
+        e4.set();
+        assert_eq!(do_select(f1, f2, f3, f4).await, 4);
+        e3.set();
+        assert_eq!(do_select(f1, f2, f3, f4).await, 3);
+        e2.set();
+        assert_eq!(do_select(f1, f2, f3, f4).await, 2);
+        e1.set();
+        assert_eq!(do_select(f1, f2, f3, f4).await, 1);
+    }
 
-            e.set();
+    #[crate::test]
+    async fn async_event_await_drop() {
+        let e = Rc::new(AsyncEvent::default());
 
-            f2.await.unwrap();
-        })
+        let e1 = e.clone();
+        let e2 = e.clone();
+
+        let mut f1 = e1.wait();
+        let mut f2 = e2.wait();
+
+        // force poll of f1
+        futures::select!(
+            _ = f1 => (),
+            _ = f2 => (),
+            _ = operations::nop() => ()
+        );
+
+        drop(f1);
+
+        e.set();
+
+        f2.await.unwrap();
     }
 }

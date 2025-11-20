@@ -411,29 +411,27 @@ mod test {
 
     use crate::{AsyncEvent, Errno, TaskHandleError, configuration::BusyPoll, operations};
 
-    #[test]
-    fn task_spawn_panic_test() {
-        crate::run_test("task_spawn_panic_test", async {
-            let task1 = operations::spawn_task(async {
-                panic!("abort!");
-            });
-            let task2 = operations::spawn_task(async { Err(Errno::INVAL) as Result<i32, Errno> });
-            let task3 = operations::spawn_task(async { Ok(1i32) as Result<i32, Errno> });
+    #[crate::test]
+    async fn task_spawn_panic_test() {
+        let task1 = operations::spawn_task(async {
+            panic!("abort!");
+        });
+        let task2 = operations::spawn_task(async { Err(Errno::INVAL) as Result<i32, Errno> });
+        let task3 = operations::spawn_task(async { Ok(1i32) as Result<i32, Errno> });
 
-            let result1 = task1.await;
-            let result2 = task2.await;
-            let result3 = task3.await;
+        let result1 = task1.await;
+        let result2 = task2.await;
+        let result3 = task3.await;
 
-            match result1 {
-                Err(TaskHandleError::Panic(payload)) => {
-                    assert_eq!(*payload.downcast::<&str>().unwrap(), "abort!")
-                }
-                _ => panic!("task1 should have panicked"),
+        match result1 {
+            Err(TaskHandleError::Panic(payload)) => {
+                assert_eq!(*payload.downcast::<&str>().unwrap(), "abort!")
             }
+            _ => panic!("task1 should have panicked"),
+        }
 
-            assert_eq!(result2.unwrap().unwrap_err(), Errno::INVAL);
-            assert_eq!(result3.unwrap().unwrap(), 1i32);
-        })
+        assert_eq!(result2.unwrap().unwrap_err(), Errno::INVAL);
+        assert_eq!(result3.unwrap().unwrap(), 1i32);
     }
 
     #[test]
@@ -458,31 +456,29 @@ mod test {
         assert_eq!(result2.unwrap().unwrap_err(), Errno::INVAL);
     }
 
-    #[test]
-    fn test_dangerous_task_drop() {
-        crate::run_test("test_dangerous_task_drop", async {
-            let ready = Rc::new(AsyncEvent::new());
-            let _task = {
-                let ready = ready.clone();
-                operations::spawn_task(async move {
-                    let _guard = scopeguard::guard((), |_| {
-                        // when the task is dropped while the guard is active, this guard will
-                        // be invoked which will recursively borrow_mut on task_state.
-                        println!("Activity id: {}", operations::get_activity_id());
-                    });
-                    ready.set();
-                    loop {
-                        operations::yield_io().await;
-                    }
-                })
-            };
+    #[crate::test]
+    async fn test_dangerous_task_drop() {
+        let ready = Rc::new(AsyncEvent::new());
+        let _task = {
+            let ready = ready.clone();
+            operations::spawn_task(async move {
+                let _guard = scopeguard::guard((), |_| {
+                    // when the task is dropped while the guard is active, this guard will
+                    // be invoked which will recursively borrow_mut on task_state.
+                    println!("Activity id: {}", operations::get_activity_id());
+                });
+                ready.set();
+                loop {
+                    operations::yield_io().await;
+                }
+            })
+        };
 
-            // wait for the task to get past the point where guard is active
-            ready.wait().await.unwrap();
+        // wait for the task to get past the point where guard is active
+        ready.wait().await.unwrap();
 
-            // shut down and let loop clean up tasks
-            operations::shutdown_loop();
-        })
+        // shut down and let loop clean up tasks
+        operations::shutdown_loop();
     }
 
     #[test]

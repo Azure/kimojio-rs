@@ -1388,49 +1388,47 @@ mod test {
 
     use super::{accept, recv, send, sleep, spawn_task};
 
-    #[test]
-    fn drop_futures_test() {
-        crate::run_test("drop_futures_test", async {
-            let (read, write) = crate::pipe::bipipe();
+    #[crate::test]
+    async fn drop_futures_test() {
+        let (read, write) = crate::pipe::bipipe();
 
-            let mut buf1 = [0; 1];
+        let mut buf1 = [0; 1];
 
-            let mut read1 = operations::read(&read, &mut buf1);
-            // this should poll both but return 2
-            let result = select! {
-                _ = read1 => 1,
-                _ = operations::yield_io() => 2,
-            };
-            assert_eq!(result, 2);
+        let mut read1 = operations::read(&read, &mut buf1);
+        // this should poll both but return 2
+        let result = select! {
+            _ = read1 => 1,
+            _ = operations::yield_io() => 2,
+        };
+        assert_eq!(result, 2);
 
-            // do the write so the completion will arrive before it is dropped but
-            // don't poll the read.
-            operations::write(&write, b"53").await.unwrap();
-            let mut buf2 = [0; 1];
-            operations::read(&read, &mut buf2).await.unwrap();
-            // read buf 2 to be sure the first part of the write completed, make sure
-            // we got 3 and not 5
-            assert_eq!('3', buf2[0] as char);
+        // do the write so the completion will arrive before it is dropped but
+        // don't poll the read.
+        operations::write(&write, b"53").await.unwrap();
+        let mut buf2 = [0; 1];
+        operations::read(&read, &mut buf2).await.unwrap();
+        // read buf 2 to be sure the first part of the write completed, make sure
+        // we got 3 and not 5
+        assert_eq!('3', buf2[0] as char);
 
-            // drop the lost read, which should drop after completion arrival
-            drop(read1);
+        // drop the lost read, which should drop after completion arrival
+        drop(read1);
 
-            // buf1 is available again
-            let mut read3 = operations::read(&read, &mut buf1);
-            let result = select! {
-                _ = read3 => 1,
-                _ = operations::yield_io() => 2,
-            };
-            assert_eq!(result, 2);
-            // drop read3 which should cause it to cancel and we continue
-            drop(read3);
+        // buf1 is available again
+        let mut read3 = operations::read(&read, &mut buf1);
+        let result = select! {
+            _ = read3 => 1,
+            _ = operations::yield_io() => 2,
+        };
+        assert_eq!(result, 2);
+        // drop read3 which should cause it to cancel and we continue
+        drop(read3);
 
-            // now make sure we can do a read on the same fd and get all the expected results
-            // the previous read is gone.
-            operations::write(&write, b"64").await.unwrap();
-            operations::read(&read, &mut buf2).await.unwrap();
-            assert_eq!('6', buf2[0] as char);
-        });
+        // now make sure we can do a read on the same fd and get all the expected results
+        // the previous read is gone.
+        operations::write(&write, b"64").await.unwrap();
+        operations::read(&read, &mut buf2).await.unwrap();
+        assert_eq!('6', buf2[0] as char);
     }
 
     #[test]
@@ -1447,168 +1445,155 @@ mod test {
         });
     }
 
-    #[test]
-    fn spawn_test() {
-        crate::run_test("spawn_test", async {
-            let shared = Rc::new(Cell::new(0i32));
-            let shared1 = shared.clone();
-            let task1 = operations::spawn_task(async move {
-                shared1.set(shared1.get() + 1);
-            });
-            task1.await.unwrap();
-            assert_eq!(1, shared.get());
+    #[crate::test]
+    async fn spawn_test() {
+        let shared = Rc::new(Cell::new(0i32));
+        let shared1 = shared.clone();
+        let task1 = operations::spawn_task(async move {
+            shared1.set(shared1.get() + 1);
         });
+        task1.await.unwrap();
+        assert_eq!(1, shared.get());
     }
 
-    #[test]
-    fn spawn_io_test() {
-        crate::run_test("spawn_io_tests", async {
-            let shared = Rc::new(Cell::new(0i32));
-            let event = Rc::new(AsyncEvent::new());
-            event.reset();
-            let task = {
-                let event = event.clone();
-                let shared = shared.clone();
-                operations::spawn_task(async move {
-                    shared.set(shared.get() + 1);
-                    event.wait().await.unwrap();
-                    shared.set(shared.get() + 1);
-                })
-            };
-            assert_eq!(0, shared.get());
-            operations::yield_io().await;
-            assert_eq!(1, shared.get());
-            event.set();
-            task.await.unwrap();
-            assert_eq!(2, shared.get());
-        });
+    #[crate::test]
+    async fn spawn_io_test() {
+        let shared = Rc::new(Cell::new(0i32));
+        let event = Rc::new(AsyncEvent::new());
+        event.reset();
+        let task = {
+            let event = event.clone();
+            let shared = shared.clone();
+            operations::spawn_task(async move {
+                shared.set(shared.get() + 1);
+                event.wait().await.unwrap();
+                shared.set(shared.get() + 1);
+            })
+        };
+        assert_eq!(0, shared.get());
+        operations::yield_io().await;
+        assert_eq!(1, shared.get());
+        event.set();
+        task.await.unwrap();
+        assert_eq!(2, shared.get());
     }
 
-    #[test]
-    fn spawn_60k_tasks() {
-        crate::run_test("spawn_60k_tasks", async {
-            {
-                let mut tasks: Vec<_> = Vec::new();
-                for _ in 0..60000 {
-                    tasks.push(operations::spawn_task(async {}))
-                }
-
-                operations::yield_io().await;
-            }
-
+    #[crate::test]
+    async fn spawn_60k_tasks() {
+        {
+            let mut tasks: Vec<_> = Vec::new();
             for _ in 0..60000 {
-                let handle = operations::spawn_task(async {});
-                handle.await.unwrap();
+                tasks.push(operations::spawn_task(async {}))
             }
-        });
+
+            operations::yield_io().await;
+        }
+
+        for _ in 0..60000 {
+            let handle = operations::spawn_task(async {});
+            handle.await.unwrap();
+        }
     }
 
-    #[test]
-    fn create_10000_pending_io_test() {
+    #[crate::test]
+    async fn create_10000_pending_io_test() {
         const TASK_COUNT: usize = IO_URING_SUBMISSION_ENTRIES * 10;
-        crate::run_test("create_10000_pending_io_test", async {
-            let count = Rc::new(Cell::new(0usize));
-            let mut tasks = Vec::new();
-            for _task_index in 0..TASK_COUNT {
-                let count = count.clone();
-                tasks.push(operations::spawn_task(async move {
-                    operations::sleep(Duration::from_millis(250)).await.unwrap();
-                    count.set(count.get() + 1);
-                }));
-            }
+        let count = Rc::new(Cell::new(0usize));
+        let mut tasks = Vec::new();
+        for _task_index in 0..TASK_COUNT {
+            let count = count.clone();
+            tasks.push(operations::spawn_task(async move {
+                operations::sleep(Duration::from_millis(250)).await.unwrap();
+                count.set(count.get() + 1);
+            }));
+        }
 
-            for task in tasks {
-                task.await.unwrap();
-            }
+        for task in tasks {
+            task.await.unwrap();
+        }
 
-            assert_eq!(TASK_COUNT, count.get());
+        assert_eq!(TASK_COUNT, count.get());
+    }
+
+    #[crate::test]
+    async fn unix_domain_socket_test() {
+        let listener_socket = socket(AddressFamily::UNIX, SocketType::STREAM, None)
+            .expect("Failed to create new UDS");
+        bind(
+            &listener_socket,
+            &SocketAddrUnix::new_abstract_name("unix_domain_socket_test".as_bytes())
+                .expect("Failed to create abstract name"),
+        )
+        .expect("Failed to bind socket");
+        listen(&listener_socket, 1).expect("Failed to listen");
+
+        let handle = spawn_task(async move {
+            let client_socket = socket(AddressFamily::UNIX, SocketType::STREAM, None)
+                .expect("Failed to create client socket");
+            operations::connect_unix(
+                &client_socket,
+                &SocketAddrUnix::new_abstract_name("unix_domain_socket_test".as_bytes()).unwrap(),
+            )
+            .await
+            .unwrap();
+
+            let buf = [1u8; 8];
+            send(&client_socket, &buf, SendFlags::empty(), None)
+                .await
+                .expect("Failed to write to socket");
         });
+
+        let socket = accept(&listener_socket).await.expect("Failed to accept");
+        let mut buf = [0u8; 8];
+        recv(&socket, &mut buf, RecvFlags::empty(), None)
+            .await
+            .expect("Failed to recv");
+
+        handle.await.unwrap();
     }
 
-    #[test]
-    fn unix_domain_socket_test() {
-        crate::run_test("unix_domain_socket_test", async {
-            let listener_socket = socket(AddressFamily::UNIX, SocketType::STREAM, None)
-                .expect("Failed to create new UDS");
-            bind(
-                &listener_socket,
-                &SocketAddrUnix::new_abstract_name("unix_domain_socket_test".as_bytes())
-                    .expect("Failed to create abstract name"),
+    #[crate::test]
+    async fn recv_timeout_test() {
+        let listener_socket = socket(AddressFamily::UNIX, SocketType::STREAM, None)
+            .expect("Failed to create new UDS");
+        bind(
+            &listener_socket,
+            &SocketAddrUnix::new_abstract_name("recv_timeout_test".as_bytes())
+                .expect("Failed to create abstract name"),
+        )
+        .expect("Failed to bind socket");
+        listen(&listener_socket, 1).expect("Failed to listen");
+
+        let handle = spawn_task(async move {
+            let client_socket = socket(AddressFamily::UNIX, SocketType::STREAM, None)
+                .expect("Failed to create client socket");
+            operations::connect_unix(
+                &client_socket,
+                &SocketAddrUnix::new_abstract_name("recv_timeout_test".as_bytes()).unwrap(),
             )
-            .expect("Failed to bind socket");
-            listen(&listener_socket, 1).expect("Failed to listen");
+            .await
+            .unwrap();
 
-            let handle = spawn_task(async move {
-                let client_socket = socket(AddressFamily::UNIX, SocketType::STREAM, None)
-                    .expect("Failed to create client socket");
-                operations::connect_unix(
-                    &client_socket,
-                    &SocketAddrUnix::new_abstract_name("unix_domain_socket_test".as_bytes())
-                        .unwrap(),
-                )
+            sleep(Duration::from_secs(2))
                 .await
-                .unwrap();
+                .expect("Failed to sleep as expected");
+        });
 
-                let buf = [1u8; 8];
-                send(&client_socket, &buf, SendFlags::empty(), None)
-                    .await
-                    .expect("Failed to write to socket");
-            });
-
-            let socket = accept(&listener_socket).await.expect("Failed to accept");
-            let mut buf = [0u8; 8];
-            recv(&socket, &mut buf, RecvFlags::empty(), None)
-                .await
-                .expect("Failed to recv");
-
-            handle.await.unwrap();
-        })
-    }
-
-    #[test]
-    fn recv_timeout_test() {
-        crate::run_test("recv_timeout_test", async {
-            let listener_socket = socket(AddressFamily::UNIX, SocketType::STREAM, None)
-                .expect("Failed to create new UDS");
-            bind(
-                &listener_socket,
-                &SocketAddrUnix::new_abstract_name("recv_timeout_test".as_bytes())
-                    .expect("Failed to create abstract name"),
+        let socket = accept(&listener_socket).await.expect("Failed to accept");
+        let mut buf = [0u8; 8];
+        assert_eq!(
+            Errno::TIME,
+            recv(
+                &socket,
+                &mut buf,
+                RecvFlags::empty(),
+                Some(Duration::from_secs(1)),
             )
-            .expect("Failed to bind socket");
-            listen(&listener_socket, 1).expect("Failed to listen");
+            .await
+            .expect_err("No timeout as expected")
+        );
 
-            let handle = spawn_task(async move {
-                let client_socket = socket(AddressFamily::UNIX, SocketType::STREAM, None)
-                    .expect("Failed to create client socket");
-                operations::connect_unix(
-                    &client_socket,
-                    &SocketAddrUnix::new_abstract_name("recv_timeout_test".as_bytes()).unwrap(),
-                )
-                .await
-                .unwrap();
-
-                sleep(Duration::from_secs(2))
-                    .await
-                    .expect("Failed to sleep as expected");
-            });
-
-            let socket = accept(&listener_socket).await.expect("Failed to accept");
-            let mut buf = [0u8; 8];
-            assert_eq!(
-                Errno::TIME,
-                recv(
-                    &socket,
-                    &mut buf,
-                    RecvFlags::empty(),
-                    Some(Duration::from_secs(1)),
-                )
-                .await
-                .expect_err("No timeout as expected")
-            );
-
-            handle.await.unwrap();
-        })
+        handle.await.unwrap();
     }
 
     #[test]
@@ -1636,346 +1621,318 @@ mod test {
         assert!(failed(parse_version("y.5")));
     }
 
-    #[test]
-    fn task_error_test() {
-        crate::run_test("task_error_test", async {
-            let task_handle = operations::spawn_task(async move {
-                Err(Errno::from_raw_os_error(1)) as Result<(), Errno>
-            });
+    #[crate::test]
+    async fn task_error_test() {
+        let task_handle =
+            operations::spawn_task(
+                async move { Err(Errno::from_raw_os_error(1)) as Result<(), Errno> },
+            );
 
-            assert_eq!(1, task_handle.await.unwrap().unwrap_err().raw_os_error());
-        })
+        assert_eq!(1, task_handle.await.unwrap().unwrap_err().raw_os_error());
     }
 
-    #[test]
-    fn starvation_test() {
-        crate::run_test("starvation_test", async {
-            let terminate_time = Instant::now() + Duration::from_secs(10);
+    #[crate::test]
+    async fn starvation_test() {
+        let terminate_time = Instant::now() + Duration::from_secs(10);
 
-            let done = Rc::new(Cell::new(false));
-            let yield_count = Rc::new(Cell::new(0usize));
-            let infinite_yield_task = {
-                let done = done.clone();
-                let yield_count = yield_count.clone();
-                operations::spawn_task(async move {
-                    while !done.get() {
-                        operations::yield_io().await;
-                        yield_count.set(yield_count.get() + 1);
+        let done = Rc::new(Cell::new(false));
+        let yield_count = Rc::new(Cell::new(0usize));
+        let infinite_yield_task = {
+            let done = done.clone();
+            let yield_count = yield_count.clone();
+            operations::spawn_task(async move {
+                while !done.get() {
+                    operations::yield_io().await;
+                    yield_count.set(yield_count.get() + 1);
 
-                        assert!(
-                            Instant::now() < terminate_time,
-                            "Short sleep should complete well before terminate_time"
-                        );
-                    }
-                })
-            };
-
-            let respawn_count = Rc::new(Cell::new(0usize));
-            {
-                let done = done.clone();
-                let respawn_count = respawn_count.clone();
-
-                async fn respawn(
-                    done: Rc<Cell<bool>>,
-                    respawn_count: Rc<Cell<usize>>,
-                    terminate_time: Instant,
-                ) {
                     assert!(
                         Instant::now() < terminate_time,
                         "Short sleep should complete well before terminate_time"
                     );
-                    if !done.get() {
-                        respawn_count.set(respawn_count.get() + 1);
-                        operations::spawn_task(respawn(done, respawn_count, terminate_time));
-                    }
                 }
-
-                operations::spawn_task(respawn(done, respawn_count, terminate_time));
-            }
-
-            // sleep will create a pending I/O that wakes up this task.  If the
-            // tasks above starve the loop, then this sleep will not complete
-            // and the starvation inducing tasks will panic when they reach
-            // terminate_time.
-            operations::sleep(Duration::from_millis(100)).await.unwrap();
-            done.set(true);
-
-            infinite_yield_task.await.unwrap();
-
-            assert!(yield_count.get() > 0);
-            assert!(respawn_count.get() > 0);
-        })
-    }
-
-    #[test]
-    fn test_abort() {
-        crate::run_test("test_abort", async {
-            let io_forever_task = operations::spawn_task(async {
-                loop {
-                    operations::nop().await.unwrap()
-                }
-            });
-            let wait_forever_task = operations::spawn_task(async {
-                let event = AsyncEvent::new();
-                event.wait().await.unwrap();
-            });
-            let yield_forever_task = operations::spawn_task(async {
-                loop {
-                    operations::yield_io().await;
-                }
-            });
-
-            // yield and let tasks start
-            operations::yield_io().await;
-
-            // abort them all
-            io_forever_task.abort();
-            wait_forever_task.abort();
-            yield_forever_task.abort();
-
-            fn get_abort_result(result: Result<(), TaskHandleError>) -> &'static str {
-                match result {
-                    Ok(_) => panic!("Task should have been aborted"),
-                    Err(TaskHandleError::Canceled) => panic!("Task should have been aborted"),
-                    Err(TaskHandleError::Panic(payload)) => *payload.downcast::<&str>().unwrap(),
-                }
-            }
-
-            // wait for them to complete with panic message
-            let result = io_forever_task.await;
-            assert_eq!(get_abort_result(result), "Task aborted");
-            let result = wait_forever_task.await;
-            assert_eq!(get_abort_result(result), "Task aborted");
-            let result = yield_forever_task.await;
-            assert_eq!(get_abort_result(result), "Task aborted");
-        })
-    }
-
-    #[test]
-    fn test_wait_for_multiple_tasks_with_futures_unordered() {
-        crate::run_test(
-            "test_wait_for_multiple_tasks_with_futures_unordered",
-            async {
-                let task_count = 10;
-                let mut futures = FuturesUnordered::new();
-                for _ in 0..task_count {
-                    futures.push(operations::spawn_task(async {
-                        operations::sleep(Duration::from_millis(100)).await.unwrap();
-                    }));
-                }
-
-                while futures.next().await.is_some() {}
-            },
-        )
-    }
-
-    #[test]
-    fn test_wait_and_join_task_handle() {
-        crate::run_test("test_wait_and_join_task_handle", async {
-            let task = operations::spawn_task(async { 5 });
-
-            let (_f1, f2) = futures::join!(task.wait(), task);
-
-            assert_eq!(f2.unwrap(), 5);
-        })
-    }
-
-    #[test]
-    #[allow(clippy::async_yields_async)]
-    fn test_cancel_sleep_with_io_scope() {
-        crate::run_test("test_cancel_sleep_with_io_scope", async {
-            let sleep_a_long_time = io_scope(async move || {
-                let mut sleep_a_long_time =
-                    operations::sleep(Duration::from_secs(3600)).map(|result| {
-                        assert_eq!(result, Err(Errno::CANCELED));
-                        "it was canceled"
-                    });
-
-                futures::select! {
-                    _ = sleep_a_long_time => panic!("sleep should not return"),
-                    default => {}
-                }
-                sleep_a_long_time
             })
-            .await;
+        };
 
-            let result = sleep_a_long_time.await;
+        let respawn_count = Rc::new(Cell::new(0usize));
+        {
+            let done = done.clone();
+            let respawn_count = respawn_count.clone();
 
-            assert_eq!(result.to_string(), "it was canceled".to_string());
-        })
+            async fn respawn(
+                done: Rc<Cell<bool>>,
+                respawn_count: Rc<Cell<usize>>,
+                terminate_time: Instant,
+            ) {
+                assert!(
+                    Instant::now() < terminate_time,
+                    "Short sleep should complete well before terminate_time"
+                );
+                if !done.get() {
+                    respawn_count.set(respawn_count.get() + 1);
+                    operations::spawn_task(respawn(done, respawn_count, terminate_time));
+                }
+            }
+
+            operations::spawn_task(respawn(done, respawn_count, terminate_time));
+        }
+
+        // sleep will create a pending I/O that wakes up this task.  If the
+        // tasks above starve the loop, then this sleep will not complete
+        // and the starvation inducing tasks will panic when they reach
+        // terminate_time.
+        operations::sleep(Duration::from_millis(100)).await.unwrap();
+        done.set(true);
+
+        infinite_yield_task.await.unwrap();
+
+        assert!(yield_count.get() > 0);
+        assert!(respawn_count.get() > 0);
     }
 
-    #[test]
-    fn test_cancel_wait_with_io_scope() {
-        crate::run_test("test_cancel_wait_with_io_scope", async {
+    #[crate::test]
+    async fn test_abort() {
+        let io_forever_task = operations::spawn_task(async {
+            loop {
+                operations::nop().await.unwrap()
+            }
+        });
+        let wait_forever_task = operations::spawn_task(async {
             let event = AsyncEvent::new();
-            io_scope(async move || {
-                let mut wait = event.wait();
-                futures::select! {
-                    _ = wait => panic!("wait should not return"),
-                    default => {}
-                }
-                operations::io_scope_cancel();
+            event.wait().await.unwrap();
+        });
+        let yield_forever_task = operations::spawn_task(async {
+            loop {
+                operations::yield_io().await;
+            }
+        });
 
-                assert_eq!(wait.await, Err(CanceledError {}));
+        // yield and let tasks start
+        operations::yield_io().await;
 
-                event.set();
-                assert_eq!(event.wait().await, Ok(()));
-            })
-            .await;
-        })
+        // abort them all
+        io_forever_task.abort();
+        wait_forever_task.abort();
+        yield_forever_task.abort();
+
+        fn get_abort_result(result: Result<(), TaskHandleError>) -> &'static str {
+            match result {
+                Ok(_) => panic!("Task should have been aborted"),
+                Err(TaskHandleError::Canceled) => panic!("Task should have been aborted"),
+                Err(TaskHandleError::Panic(payload)) => *payload.downcast::<&str>().unwrap(),
+            }
+        }
+
+        // wait for them to complete with panic message
+        let result = io_forever_task.await;
+        assert_eq!(get_abort_result(result), "Task aborted");
+        let result = wait_forever_task.await;
+        assert_eq!(get_abort_result(result), "Task aborted");
+        let result = yield_forever_task.await;
+        assert_eq!(get_abort_result(result), "Task aborted");
     }
 
-    #[test]
-    fn test_nested_io_scope_wait() {
-        crate::run_test("test_nested_io_scope_wait", async {
-            let event1 = AsyncEvent::new();
-            let event2 = AsyncEvent::new();
-            io_scope(async move || {
-                let mut wait = event1.wait();
-                futures::select! {
-                    _ = wait => panic!("wait should not return"),
-                    default => {}
-                }
+    #[crate::test]
+    async fn test_wait_for_multiple_tasks_with_futures_unordered() {
+        let task_count = 10;
+        let mut futures = FuturesUnordered::new();
+        for _ in 0..task_count {
+            futures.push(operations::spawn_task(async {
+                operations::sleep(Duration::from_millis(100)).await.unwrap();
+            }));
+        }
 
-                io_scope(async move || {
-                    let mut wait2 = event2.wait();
-                    futures::select! {
-                        _ = wait2 => panic!("wait should not return"),
-                        default => {}
-                    }
-
-                    operations::io_scope_cancel();
-
-                    assert_eq!(wait2.await, Err(CanceledError {}));
-
-                    event2.set();
-                    assert_eq!(event2.wait().await, Ok(()));
-                })
-                .await;
-
-                // still not complete
-                futures::select! {
-                    _ = wait => panic!("wait should not return"),
-                    default => {}
-                }
-
-                operations::io_scope_cancel();
-
-                assert_eq!(wait.await, Err(CanceledError {}));
-
-                event1.set();
-                assert_eq!(event1.wait().await, Ok(()));
-            })
-            .await;
-        })
+        while futures.next().await.is_some() {}
     }
 
-    #[test]
-    fn test_nested_io_scope() {
-        crate::run_test("test_nested_io_scope", async {
-            io_scope(async move || {
-                let mut wait1 = operations::sleep(Duration::from_secs(3600));
-                futures::select! {
-                    _ = wait1 => panic!("wait should not return"),
-                    default => {}
-                }
+    #[crate::test]
+    async fn test_wait_and_join_task_handle() {
+        let task = operations::spawn_task(async { 5 });
 
-                io_scope(async move || {
-                    let mut wait2 = operations::sleep(Duration::from_secs(3600));
-                    futures::select! {
-                        _ = wait2 => panic!("wait should not return"),
-                        default => {}
-                    }
+        let (_f1, f2) = futures::join!(task.wait(), task);
 
-                    operations::io_scope_cancel();
-
-                    assert_eq!(wait2.await, Err(Errno::CANCELED));
-                })
-                .await;
-
-                // still not complete
-                futures::select! {
-                    _ = wait1 => panic!("wait should not return"),
-                    default => {}
-                }
-
-                operations::io_scope_cancel();
-
-                assert_eq!(wait1.await, Err(Errno::CANCELED));
-            })
-            .await;
-        })
+        assert_eq!(f2.unwrap(), 5);
     }
 
-    #[test]
-    fn test_cancel_too_many_pending_io() {
-        crate::run_test("test_cancel_too_many_pending_io", async {
-            let nops = io_scope(async move || {
-                let mut requests = Vec::new();
-                for _ in 0..IO_URING_SUBMISSION_ENTRIES * 4 {
-                    requests.push(operations::sleep(Duration::from_secs(3600)));
-                }
-
-                operations::io_scope_cancel();
-
-                // after cancelling we should be able to issue more I/O
-                let nops = (0..IO_URING_SUBMISSION_ENTRIES).map(|_| operations::nop());
-
-                let results = join_all(requests).await;
-                for result in results {
+    #[crate::test]
+    #[allow(clippy::async_yields_async)]
+    async fn test_cancel_sleep_with_io_scope() {
+        let sleep_a_long_time = io_scope(async move || {
+            let mut sleep_a_long_time =
+                operations::sleep(Duration::from_secs(3600)).map(|result| {
                     assert_eq!(result, Err(Errno::CANCELED));
+                    "it was canceled"
+                });
+
+            futures::select! {
+                _ = sleep_a_long_time => panic!("sleep should not return"),
+                default => {}
+            }
+            sleep_a_long_time
+        })
+        .await;
+
+        let result = sleep_a_long_time.await;
+
+        assert_eq!(result.to_string(), "it was canceled".to_string());
+    }
+
+    #[crate::test]
+    async fn test_cancel_wait_with_io_scope() {
+        let event = AsyncEvent::new();
+        io_scope(async move || {
+            let mut wait = event.wait();
+            futures::select! {
+                _ = wait => panic!("wait should not return"),
+                default => {}
+            }
+            operations::io_scope_cancel();
+
+            assert_eq!(wait.await, Err(CanceledError {}));
+
+            event.set();
+            assert_eq!(event.wait().await, Ok(()));
+        })
+        .await;
+    }
+
+    #[crate::test]
+    async fn test_nested_io_scope_wait() {
+        let event1 = AsyncEvent::new();
+        let event2 = AsyncEvent::new();
+        io_scope(async move || {
+            let mut wait = event1.wait();
+            futures::select! {
+                _ = wait => panic!("wait should not return"),
+                default => {}
+            }
+
+            io_scope(async move || {
+                let mut wait2 = event2.wait();
+                futures::select! {
+                    _ = wait2 => panic!("wait should not return"),
+                    default => {}
                 }
 
-                nops
+                operations::io_scope_cancel();
+
+                assert_eq!(wait2.await, Err(CanceledError {}));
+
+                event2.set();
+                assert_eq!(event2.wait().await, Ok(()));
             })
             .await;
 
-            for result in join_all(nops).await {
-                assert_eq!(result, Ok(()));
+            // still not complete
+            futures::select! {
+                _ = wait => panic!("wait should not return"),
+                default => {}
             }
+
+            operations::io_scope_cancel();
+
+            assert_eq!(wait.await, Err(CanceledError {}));
+
+            event1.set();
+            assert_eq!(event1.wait().await, Ok(()));
         })
+        .await;
     }
 
-    #[test]
-    fn test_overflow_via_submit() {
-        crate::run_test("test_overflow", async {
-            let mut ops = Vec::new();
-            for _x in 0..IO_URING_SUBMISSION_ENTRIES * 100 {
-                ops.push(operations::submit(operations::nop()));
+    #[crate::test]
+    async fn test_nested_io_scope() {
+        io_scope(async move || {
+            let mut wait1 = operations::sleep(Duration::from_secs(3600));
+            futures::select! {
+                _ = wait1 => panic!("wait should not return"),
+                default => {}
             }
-            for op in ops {
-                let result = op.await;
-                assert!(result.is_ok());
+
+            io_scope(async move || {
+                let mut wait2 = operations::sleep(Duration::from_secs(3600));
+                futures::select! {
+                    _ = wait2 => panic!("wait should not return"),
+                    default => {}
+                }
+
+                operations::io_scope_cancel();
+
+                assert_eq!(wait2.await, Err(Errno::CANCELED));
+            })
+            .await;
+
+            // still not complete
+            futures::select! {
+                _ = wait1 => panic!("wait should not return"),
+                default => {}
             }
+
+            operations::io_scope_cancel();
+
+            assert_eq!(wait1.await, Err(Errno::CANCELED));
         })
+        .await;
     }
 
-    #[test]
-    fn test_too_many_pending_io() {
-        crate::run_test("test_cancel_too_many_pending_io", async {
-            let requests: Vec<_> = (0..IO_URING_SUBMISSION_ENTRIES * 100)
-                .map(|_| operations::sleep(Duration::from_millis(100)))
-                .collect();
+    #[crate::test]
+    async fn test_cancel_too_many_pending_io() {
+        let nops = io_scope(async move || {
+            let mut requests = Vec::new();
+            for _ in 0..IO_URING_SUBMISSION_ENTRIES * 4 {
+                requests.push(operations::sleep(Duration::from_secs(3600)));
+            }
+
+            operations::io_scope_cancel();
+
+            // after cancelling we should be able to issue more I/O
+            let nops = (0..IO_URING_SUBMISSION_ENTRIES).map(|_| operations::nop());
 
             let results = join_all(requests).await;
             for result in results {
-                result.unwrap();
+                assert_eq!(result, Err(Errno::CANCELED));
             }
+
+            nops
         })
+        .await;
+
+        for result in join_all(nops).await {
+            assert_eq!(result, Ok(()));
+        }
     }
 
-    #[test]
-    fn test_spawn_return_future() {
-        crate::run_test("test_spawn_return_future", async {
-            #[allow(clippy::async_yields_async)]
-            let task = operations::spawn_task(async {
-                // don't await this one
-                operations::nop()
-            });
-            let result = task.await.unwrap();
-            assert_eq!(result.await, Ok(()));
-        })
+    #[crate::test]
+    async fn test_overflow_via_submit() {
+        let mut ops = Vec::new();
+        for _x in 0..IO_URING_SUBMISSION_ENTRIES * 100 {
+            ops.push(operations::submit(operations::nop()));
+        }
+        for op in ops {
+            let result = op.await;
+            assert!(result.is_ok());
+        }
+    }
+
+    #[crate::test]
+    async fn test_too_many_pending_io() {
+        let requests: Vec<_> = (0..IO_URING_SUBMISSION_ENTRIES * 100)
+            .map(|_| operations::sleep(Duration::from_millis(100)))
+            .collect();
+
+        let results = join_all(requests).await;
+        for result in results {
+            result.unwrap();
+        }
+    }
+
+    #[crate::test]
+    async fn test_spawn_return_future() {
+        #[allow(clippy::async_yields_async)]
+        let task = operations::spawn_task(async {
+            // don't await this one
+            operations::nop()
+        });
+        let result = task.await.unwrap();
+        assert_eq!(result.await, Ok(()));
     }
 
     #[test]
@@ -2031,91 +1988,87 @@ mod test {
     }
 
     #[cfg(feature = "fault_injection")]
-    #[test]
-    fn test_inject_fault() {
-        crate::run_test("test_inject_fault", async {
-            operations::inject_fault(0, Errno::FAULT);
-            assert_eq!(operations::nop().await, Err(Errno::FAULT));
+    #[crate::test]
+    async fn test_inject_fault() {
+        operations::inject_fault(0, Errno::FAULT);
+        assert_eq!(operations::nop().await, Err(Errno::FAULT));
 
-            // after a fault, we are ok
-            assert_eq!(operations::nop().await, Ok(()));
+        // after a fault, we are ok
+        assert_eq!(operations::nop().await, Ok(()));
 
-            // It takes too poll() calls to complete any I/O so
-            // with a fault count of 1, this will still fail.
-            operations::inject_fault(1, Errno::FAULT);
-            assert_eq!(operations::nop().await, Err(Errno::FAULT));
+        // It takes too poll() calls to complete any I/O so
+        // with a fault count of 1, this will still fail.
+        operations::inject_fault(1, Errno::FAULT);
+        assert_eq!(operations::nop().await, Err(Errno::FAULT));
 
-            // after a fault, we are ok
-            assert_eq!(operations::nop().await, Ok(()));
+        // after a fault, we are ok
+        assert_eq!(operations::nop().await, Ok(()));
 
-            // But with fault count of 2, we will skip the first and next will be Ok
-            operations::inject_fault(2, Errno::FAULT);
-            assert_eq!(operations::nop().await, Ok(()));
-            assert_eq!(operations::nop().await, Err(Errno::FAULT));
-            assert_eq!(operations::nop().await, Ok(()));
-        })
+        // But with fault count of 2, we will skip the first and next will be Ok
+        operations::inject_fault(2, Errno::FAULT);
+        assert_eq!(operations::nop().await, Ok(()));
+        assert_eq!(operations::nop().await, Err(Errno::FAULT));
+        assert_eq!(operations::nop().await, Ok(()));
     }
 
-    #[test]
-    fn file_tests() {
-        crate::run_test("file_tests", async {
-            let root = c"/tmp/kimojio-test";
-            let filename = c"/tmp/kimojio-test/file.txt";
-            let newpath1 = c"/tmp/kimojio-test/file.txt-1.link";
-            let newpath2 = c"/tmp/kimojio-test/file.txt-2.link";
+    #[crate::test]
+    async fn file_tests() {
+        let root = c"/tmp/kimojio-test";
+        let filename = c"/tmp/kimojio-test/file.txt";
+        let newpath1 = c"/tmp/kimojio-test/file.txt-1.link";
+        let newpath2 = c"/tmp/kimojio-test/file.txt-2.link";
 
-            match operations::mkdir(root, 0o775.into()).await {
-                Ok(()) => {}
-                Err(Errno::EXIST) => println!("Directory {root:?} already exists"),
-                Err(e) => panic!("Failed to create directory {root:?}: {e}"),
+        match operations::mkdir(root, 0o775.into()).await {
+            Ok(()) => {}
+            Err(Errno::EXIST) => println!("Directory {root:?} already exists"),
+            Err(e) => panic!("Failed to create directory {root:?}: {e}"),
+        }
+
+        for name in [filename, newpath1, newpath2] {
+            let stat = operations::stat(name).await;
+            if stat.is_ok() {
+                operations::unlink(name).await.unwrap();
             }
+        }
 
-            for name in [filename, newpath1, newpath2] {
-                let stat = operations::stat(name).await;
-                if stat.is_ok() {
-                    operations::unlink(name).await.unwrap();
-                }
-            }
-
-            let file = operations::open(
-                filename,
-                OFlags::CREATE | OFlags::RDWR,
-                Mode::from_raw_mode(0o666),
-            )
+        let file = operations::open(
+            filename,
+            OFlags::CREATE | OFlags::RDWR,
+            Mode::from_raw_mode(0o666),
+        )
+        .await
+        .unwrap();
+        operations::link(filename, newpath1).await.unwrap();
+        operations::rename(newpath1, newpath2).await.unwrap();
+        operations::write(&file, b"hello, world!").await.unwrap();
+        operations::pwrite(&file, b"Gdday", 0).await.unwrap();
+        operations::pwrite_polled(&file, b"mate!", 7, false)
             .await
             .unwrap();
-            operations::link(filename, newpath1).await.unwrap();
-            operations::rename(newpath1, newpath2).await.unwrap();
-            operations::write(&file, b"hello, world!").await.unwrap();
-            operations::pwrite(&file, b"Gdday", 0).await.unwrap();
-            operations::pwrite_polled(&file, b"mate!", 7, false)
-                .await
-                .unwrap();
-            operations::fsync(&file).await.unwrap();
-            let mut buf = [0u8; 1024];
-            let amount = operations::pread(&file, &mut buf, 0).await.unwrap();
-            assert_eq!(amount, 13);
-            assert_eq!(&buf[..13], b"Gdday, mate!!");
-            operations::close(file);
-            operations::unlink(filename).await.unwrap();
+        operations::fsync(&file).await.unwrap();
+        let mut buf = [0u8; 1024];
+        let amount = operations::pread(&file, &mut buf, 0).await.unwrap();
+        assert_eq!(amount, 13);
+        assert_eq!(&buf[..13], b"Gdday, mate!!");
+        operations::close(file);
+        operations::unlink(filename).await.unwrap();
 
-            let file = operations::open(newpath2, OFlags::RDONLY, Mode::from_raw_mode(0o666))
-                .await
-                .unwrap();
-            let stat = operations::fstat(&file).await.unwrap();
-            assert_eq!(stat.stx_size, 13);
-            let amount = operations::read_with_deadline(
-                &file,
-                &mut buf[..13],
-                Some(Instant::now() + Duration::from_secs(120)),
-            )
+        let file = operations::open(newpath2, OFlags::RDONLY, Mode::from_raw_mode(0o666))
             .await
             .unwrap();
-            assert_eq!(amount, 13);
-            assert_eq!(&buf[..13], b"Gdday, mate!!");
-            operations::close(file);
-            operations::unlink(newpath2).await.unwrap();
-            operations::rmdir(root).await.unwrap();
-        });
+        let stat = operations::fstat(&file).await.unwrap();
+        assert_eq!(stat.stx_size, 13);
+        let amount = operations::read_with_deadline(
+            &file,
+            &mut buf[..13],
+            Some(Instant::now() + Duration::from_secs(120)),
+        )
+        .await
+        .unwrap();
+        assert_eq!(amount, 13);
+        assert_eq!(&buf[..13], b"Gdday, mate!!");
+        operations::close(file);
+        operations::unlink(newpath2).await.unwrap();
+        operations::rmdir(root).await.unwrap();
     }
 }

@@ -53,7 +53,10 @@ pub(crate) async fn c_client2(
     Ok(())
 }
 
-async fn c_stream() {
+/// This tests constructing tls context from OpenSSL crate SslContext.
+/// And use it to create a client and server stream.
+#[crate::test]
+async fn test_c_stream() {
     let cert_and_key_file_names =
         crate::tlscontext::test::test_utils::setup_default_certs().unwrap();
     let (client_fd, server_fd) = bipipe();
@@ -67,11 +70,4 @@ async fn c_stream() {
     c_client2(&cert_and_key_file_names, client_fd, None)
         .await
         .unwrap();
-}
-
-/// This tests constructing tls context from OpenSSL crate SslContext.
-/// And use it to create a client and server stream.
-#[test]
-fn c_stream_test() {
-    crate::run_test("c_stream", c_stream())
 }

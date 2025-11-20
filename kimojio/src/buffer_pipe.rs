@@ -272,649 +272,597 @@ mod test {
     use crate::{AsyncStreamRead, AsyncStreamWrite, SplittableStream, operations};
     use std::rc::Rc;
 
-    #[test]
-    fn buffer_stream_test_write_larger_than_internal_buffer() {
-        crate::run_test(
-            "buffer_stream_test_write_larger_than_internal_buffer",
-            async move {
-                let mut data = Vec::new();
-                let stream = Rc::new(BufferStream::new());
+    #[crate::test]
+    async fn buffer_stream_test_write_larger_than_internal_buffer() {
+        let mut data = Vec::new();
+        let stream = Rc::new(BufferStream::new());
 
-                let task = {
-                    let stream = stream.clone();
-                    operations::spawn_task(async move {
-                        loop {
-                            let mut buffer = [0; 1024];
-                            if stream.read(&mut buffer, None).await.is_err() {
-                                return data;
-                            }
-                            data.extend_from_slice(&buffer);
-                        }
-                    })
-                };
-
-                stream.write(&[42u8; 4096], None).await.unwrap();
-                stream.shutdown().await.unwrap();
-                let data = task.await.unwrap();
-                assert_eq!(&[42u8; 4096], &data[0..]);
-            },
-        );
-    }
-
-    #[test]
-    fn buffer_stream_contiguous_full_buffer_test() {
-        crate::run_test("buffer_stream_contiguous_full_buffer_test", async move {
-            let stream = BufferStream::new();
-            // Fill the stream completely.
-            let data = [7u8; 1024];
-            stream.write(&data, None).await.unwrap();
-
-            // Read back all data.
-            let mut read_buf = [0u8; 1024];
-            stream.read(&mut read_buf, None).await.unwrap();
-            assert_eq!(data, read_buf);
-        });
-    }
-
-    #[test]
-    fn buffer_stream_interleaved_read_write_test() {
-        crate::run_test("buffer_stream_interleaved_read_write_test", async move {
-            let stream = BufferStream::new();
-            // Write part of the data.
-            stream.write(b"abc", None).await.unwrap();
-            // Perform a partial read.
-            let mut buf = [0u8; 2];
-            let amount = stream.try_read(&mut buf, None).await.unwrap();
-            assert_eq!(amount, 2);
-            assert_eq!(&buf, b"ab");
-
-            // Now write additional data.
-            stream.write(b"defgh", None).await.unwrap();
-
-            // Read the remaining data.
-            let mut buf2 = [0u8; 6];
-            stream.read(&mut buf2, None).await.unwrap();
-            // Expected concatenation: "cdefgh"
-            assert_eq!(&buf2, b"cdefgh");
-        });
-    }
-
-    #[test]
-    fn buffer_stream_close_and_error_test() {
-        crate::run_test("buffer_stream_close_and_error_test", async move {
-            let stream = BufferStream::new();
-            stream.write(b"data", None).await.unwrap();
-
-            // Shut down the stream.
-            stream.shutdown().await.unwrap();
-
-            // Subsequent operations should error.
-            let res2 = stream.write(b"more", None).await;
-            assert!(res2.is_err());
-
-            let mut buf = [0u8; 4];
-            stream.read(&mut buf, None).await.unwrap();
-            assert_eq!(&buf, b"data");
-
-            let res = stream.read(&mut buf, None).await;
-            assert!(res.is_err());
-            let res3 = stream.try_read(&mut buf, None).await;
-            assert!(res3.is_err());
-        });
-    }
-
-    #[test]
-    fn buffer_stream_multiple_small_writes_test() {
-        crate::run_test("buffer_stream_multiple_small_writes_test", async move {
-            let stream = BufferStream::new();
-
-            // Write several small chunks.
-            let data: [&'static [u8]; 4] = [b"hello", b" ", b"world", b"!"];
-            for chunk in data {
-                stream.write(chunk, None).await.unwrap();
-            }
-
-            // Read back the entire message.
-            let mut result = vec![0u8; 12];
-            stream.read(&mut result, None).await.unwrap();
-            assert_eq!(&result, b"hello world!");
-        });
-    }
-
-    #[test]
-    fn buffer_stream_tests() {
-        crate::run_test("buffer_stream_tests", async move {
-            let mut buffer_stream = BufferStream::new();
-            let mut buffer1 = [1; 1024];
-
-            async fn expect(stream: &mut BufferStream, buffer: &[u8]) {
-                let mut result_buffer = [0; 8192];
-                let result_buffer = &mut result_buffer[0..buffer.len()];
-                stream.read(result_buffer, None).await.unwrap();
-                assert_eq!(buffer, result_buffer);
-            }
-
-            async fn write_read(stream: &mut BufferStream, buffer: &[u8]) {
-                stream.write(buffer, None).await.unwrap();
-                expect(stream, buffer).await;
-            }
-
-            write_read(&mut buffer_stream, &[1; 1024]).await;
-            write_read(&mut buffer_stream, &[2; 512]).await;
-            write_read(&mut buffer_stream, &[3; 512]).await;
-
-            write_read(&mut buffer_stream, &[4; 512]).await;
-            write_read(&mut buffer_stream, &[5; 1024]).await;
-
-            // 2. try_read returns some data when the buffer has some
-            buffer_stream.write(b"hello", None).await.unwrap();
-            let amount = buffer_stream.try_read(&mut buffer1, None).await.unwrap();
-            assert_eq!(amount, 5);
-            assert_eq!(&buffer1[0..5], b"hello");
-
-            // 3. try_read returns a short read when the buffer has partly wrapped
-            buffer_stream.write(b"world", None).await.unwrap();
-            let amount = buffer_stream.try_read(&mut buffer1, None).await.unwrap();
-            assert_eq!(amount, 5);
-            assert_eq!(&buffer1[0..5], b"world");
-
-            // 4. read does not return until all the data has been read (need to cover partly wrapped case too)
-            buffer_stream.write(b"hello", None).await.unwrap();
-            buffer_stream.write(b"world", None).await.unwrap();
-            let mut buffer = [0; 10];
-            buffer_stream.read(&mut buffer, None).await.unwrap();
-            assert_eq!(&buffer, b"helloworld");
-
-            // 5. try_read, read, and write to a closed stream returns an error
-            buffer_stream.shutdown().await.unwrap();
-            let result = buffer_stream.read(&mut buffer, None).await;
-            assert!(result.is_err());
-            let result = buffer_stream.write(b"test", None).await;
-            assert!(result.is_err());
-
-            async fn shutdown_and_close(mut write_stream: impl AsyncStreamWrite) {
-                write_stream.shutdown().await.unwrap();
-                write_stream.close().await.unwrap();
-            }
-
-            shutdown_and_close(buffer_stream).await;
-        })
-    }
-
-    #[test]
-    fn buffer_stream_split_test() {
-        crate::run_test("buffer_stream_split_test", async move {
-            let buffer_stream = BufferStream::new();
-            let (mut read_stream, mut write_stream) = buffer_stream.split().await.unwrap();
-
-            // Test basic write to write stream and read from read stream
-            write_stream.write(b"hello world", None).await.unwrap();
-
-            let mut buffer = [0u8; 11];
-            read_stream.read(&mut buffer, None).await.unwrap();
-            assert_eq!(&buffer, b"hello world");
-        });
-    }
-
-    #[test]
-    fn buffer_read_stream_try_read_test() {
-        crate::run_test("buffer_read_stream_try_read_test", async move {
-            let buffer_stream = BufferStream::new();
-            let (mut read_stream, mut write_stream) = buffer_stream.split().await.unwrap();
-
-            // Write data to write stream
-            write_stream.write(b"test data", None).await.unwrap();
-
-            // Test try_read on read stream
-            let mut buffer = [0u8; 5];
-            let amount = read_stream.try_read(&mut buffer, None).await.unwrap();
-            assert_eq!(amount, 5);
-            assert_eq!(&buffer, b"test ");
-
-            // Read remaining data
-            let mut remaining = [0u8; 4];
-            let remaining_amount = read_stream.try_read(&mut remaining, None).await.unwrap();
-            assert_eq!(remaining_amount, 4);
-            assert_eq!(&remaining, b"data");
-        });
-    }
-
-    #[test]
-    fn buffer_read_stream_read_test() {
-        crate::run_test("buffer_read_stream_read_test", async move {
-            let buffer_stream = BufferStream::new();
-            let (mut read_stream, mut write_stream) = buffer_stream.split().await.unwrap();
-
-            // Test reading exact amount
-            write_stream.write(b"exact", None).await.unwrap();
-            let mut buffer = [0u8; 5];
-            read_stream.read(&mut buffer, None).await.unwrap();
-            assert_eq!(&buffer, b"exact");
-
-            // Test reading with concurrent writes
-            let write_task = {
-                let mut write_stream = write_stream;
-                crate::operations::spawn_task(async move {
-                    write_stream.write(b"part1", None).await.unwrap();
-                    write_stream.write(b"part2", None).await.unwrap();
-                    write_stream
-                })
-            };
-
-            let mut large_buffer = [0u8; 10];
-            read_stream.read(&mut large_buffer, None).await.unwrap();
-            assert_eq!(&large_buffer, b"part1part2");
-
-            write_task.await.unwrap();
-        });
-    }
-
-    #[test]
-    fn buffer_write_stream_write_test() {
-        crate::run_test("buffer_write_stream_write_test", async move {
-            let buffer_stream = BufferStream::new();
-            let (read_stream, mut write_stream) = buffer_stream.split().await.unwrap();
-
-            let read_task = {
-                let mut read_stream = read_stream;
-                crate::operations::spawn_task(async move {
-                    // Read back small and medium text
-                    let mut buffer1 = [0u8; 24];
-                    read_stream.read(&mut buffer1, None).await.unwrap();
-
-                    // Read back large data in chunks
-                    let mut large_buffer = Vec::new();
-                    let mut temp_buffer = [0u8; 1024];
-                    for _ in 0..2 {
-                        read_stream.read(&mut temp_buffer, None).await.unwrap();
-                        large_buffer.extend_from_slice(&temp_buffer);
+        let task = {
+            let stream = stream.clone();
+            operations::spawn_task(async move {
+                loop {
+                    let mut buffer = [0; 1024];
+                    if stream.read(&mut buffer, None).await.is_err() {
+                        return data;
                     }
-                    (buffer1, large_buffer)
-                })
-            };
+                    data.extend_from_slice(&buffer);
+                }
+            })
+        };
 
-            // Test writing various sizes
-            write_stream.write(b"small", None).await.unwrap();
-            write_stream
-                .write(b" medium sized text ", None)
-                .await
-                .unwrap();
-
-            // Test writing large data that exceeds internal buffer
-            let large_data = [42u8; 2048];
-            write_stream.write(&large_data, None).await.unwrap();
-
-            let (buffer1, buffer2) = read_task.await.unwrap();
-            assert_eq!(&buffer1, b"small medium sized text ");
-            assert_eq!(&buffer2, &large_data);
-        });
+        stream.write(&[42u8; 4096], None).await.unwrap();
+        stream.shutdown().await.unwrap();
+        let data = task.await.unwrap();
+        assert_eq!(&[42u8; 4096], &data[0..]);
     }
 
-    #[test]
-    fn buffer_write_stream_shutdown_test() {
-        crate::run_test("buffer_write_stream_shutdown_test", async move {
-            let buffer_stream = BufferStream::new();
-            let (mut read_stream, mut write_stream) = buffer_stream.split().await.unwrap();
+    #[crate::test]
+    async fn buffer_stream_contiguous_full_buffer_test() {
+        let stream = BufferStream::new();
+        // Fill the stream completely.
+        let data = [7u8; 1024];
+        stream.write(&data, None).await.unwrap();
 
-            // Write some data before shutdown
-            write_stream.write(b"before shutdown", None).await.unwrap();
+        // Read back all data.
+        let mut read_buf = [0u8; 1024];
+        stream.read(&mut read_buf, None).await.unwrap();
+        assert_eq!(data, read_buf);
+    }
 
-            // Shutdown write stream
+    #[crate::test]
+    async fn buffer_stream_interleaved_read_write_test() {
+        let stream = BufferStream::new();
+        // Write part of the data.
+        stream.write(b"abc", None).await.unwrap();
+        // Perform a partial read.
+        let mut buf = [0u8; 2];
+        let amount = stream.try_read(&mut buf, None).await.unwrap();
+        assert_eq!(amount, 2);
+        assert_eq!(&buf, b"ab");
+
+        // Now write additional data.
+        stream.write(b"defgh", None).await.unwrap();
+
+        // Read the remaining data.
+        let mut buf2 = [0u8; 6];
+        stream.read(&mut buf2, None).await.unwrap();
+        // Expected concatenation: "cdefgh"
+        assert_eq!(&buf2, b"cdefgh");
+    }
+
+    #[crate::test]
+    async fn buffer_stream_close_and_error_test() {
+        let stream = BufferStream::new();
+        stream.write(b"data", None).await.unwrap();
+
+        // Shut down the stream.
+        stream.shutdown().await.unwrap();
+
+        // Subsequent operations should error.
+        let res2 = stream.write(b"more", None).await;
+        assert!(res2.is_err());
+
+        let mut buf = [0u8; 4];
+        stream.read(&mut buf, None).await.unwrap();
+        assert_eq!(&buf, b"data");
+
+        let res = stream.read(&mut buf, None).await;
+        assert!(res.is_err());
+        let res3 = stream.try_read(&mut buf, None).await;
+        assert!(res3.is_err());
+    }
+
+    #[crate::test]
+    async fn buffer_stream_multiple_small_writes_test() {
+        let stream = BufferStream::new();
+
+        // Write several small chunks.
+        let data: [&'static [u8]; 4] = [b"hello", b" ", b"world", b"!"];
+        for chunk in data {
+            stream.write(chunk, None).await.unwrap();
+        }
+
+        // Read back the entire message.
+        let mut result = vec![0u8; 12];
+        stream.read(&mut result, None).await.unwrap();
+        assert_eq!(&result, b"hello world!");
+    }
+
+    #[crate::test]
+    async fn buffer_stream_tests() {
+        let mut buffer_stream = BufferStream::new();
+        let mut buffer1 = [1; 1024];
+
+        async fn expect(stream: &mut BufferStream, buffer: &[u8]) {
+            let mut result_buffer = [0; 8192];
+            let result_buffer = &mut result_buffer[0..buffer.len()];
+            stream.read(result_buffer, None).await.unwrap();
+            assert_eq!(buffer, result_buffer);
+        }
+
+        async fn write_read(stream: &mut BufferStream, buffer: &[u8]) {
+            stream.write(buffer, None).await.unwrap();
+            expect(stream, buffer).await;
+        }
+
+        write_read(&mut buffer_stream, &[1; 1024]).await;
+        write_read(&mut buffer_stream, &[2; 512]).await;
+        write_read(&mut buffer_stream, &[3; 512]).await;
+
+        write_read(&mut buffer_stream, &[4; 512]).await;
+        write_read(&mut buffer_stream, &[5; 1024]).await;
+
+        // 2. try_read returns some data when the buffer has some
+        buffer_stream.write(b"hello", None).await.unwrap();
+        let amount = buffer_stream.try_read(&mut buffer1, None).await.unwrap();
+        assert_eq!(amount, 5);
+        assert_eq!(&buffer1[0..5], b"hello");
+
+        // 3. try_read returns a short read when the buffer has partly wrapped
+        buffer_stream.write(b"world", None).await.unwrap();
+        let amount = buffer_stream.try_read(&mut buffer1, None).await.unwrap();
+        assert_eq!(amount, 5);
+        assert_eq!(&buffer1[0..5], b"world");
+
+        // 4. read does not return until all the data has been read (need to cover partly wrapped case too)
+        buffer_stream.write(b"hello", None).await.unwrap();
+        buffer_stream.write(b"world", None).await.unwrap();
+        let mut buffer = [0; 10];
+        buffer_stream.read(&mut buffer, None).await.unwrap();
+        assert_eq!(&buffer, b"helloworld");
+
+        // 5. try_read, read, and write to a closed stream returns an error
+        buffer_stream.shutdown().await.unwrap();
+        let result = buffer_stream.read(&mut buffer, None).await;
+        assert!(result.is_err());
+        let result = buffer_stream.write(b"test", None).await;
+        assert!(result.is_err());
+
+        async fn shutdown_and_close(mut write_stream: impl AsyncStreamWrite) {
             write_stream.shutdown().await.unwrap();
-
-            // Should be able to read existing data
-            let mut buffer = [0u8; 15];
-            read_stream.read(&mut buffer, None).await.unwrap();
-            assert_eq!(&buffer, b"before shutdown");
-
-            // Writing after shutdown should fail
-            let result = write_stream.write(b"after shutdown", None).await;
-            assert!(result.is_err());
-
-            // Reading after shutdown when no data is available should fail
-            let mut empty_buffer = [0u8; 1];
-            let result = read_stream.read(&mut empty_buffer, None).await;
-            assert!(result.is_err());
-        });
-    }
-
-    #[test]
-    fn buffer_write_stream_close_test() {
-        crate::run_test("buffer_write_stream_close_test", async move {
-            let buffer_stream = BufferStream::new();
-            let (mut read_stream, mut write_stream) = buffer_stream.split().await.unwrap();
-
-            // Write some data before close
-            write_stream.write(b"before close", None).await.unwrap();
-
-            // Close write stream
             write_stream.close().await.unwrap();
+        }
 
-            // Should be able to read existing data
-            let mut buffer = [0u8; 12];
-            read_stream.read(&mut buffer, None).await.unwrap();
-            assert_eq!(&buffer, b"before close");
-
-            // Writing after close should fail
-            let result = write_stream.write(b"after close", None).await;
-            assert!(result.is_err());
-
-            // Reading after close when no data is available should fail
-            let mut empty_buffer = [0u8; 1];
-            let result = read_stream.read(&mut empty_buffer, None).await;
-            assert!(result.is_err());
-        });
+        shutdown_and_close(buffer_stream).await;
     }
 
-    #[test]
-    fn buffer_split_streams_concurrent_operations_test() {
-        crate::run_test(
-            "buffer_split_streams_concurrent_operations_test",
-            async move {
-                let buffer_stream = BufferStream::new();
-                let (read_stream, write_stream) = buffer_stream.split().await.unwrap();
+    #[crate::test]
+    async fn buffer_stream_split_test() {
+        let buffer_stream = BufferStream::new();
+        let (mut read_stream, mut write_stream) = buffer_stream.split().await.unwrap();
 
-                let read_task = {
-                    let mut read_stream = read_stream;
-                    crate::operations::spawn_task(async move {
-                        let mut result = Vec::new();
-                        let mut buffer = [0u8; 10];
+        // Test basic write to write stream and read from read stream
+        write_stream.write(b"hello world", None).await.unwrap();
 
-                        // Read three chunks
-                        for _ in 0..3 {
-                            read_stream.read(&mut buffer, None).await.unwrap();
-                            result.extend_from_slice(&buffer);
-                        }
-                        result
-                    })
-                };
-
-                let write_task = {
-                    let mut write_stream = write_stream;
-                    crate::operations::spawn_task(async move {
-                        write_stream.write(b"chunk1____", None).await.unwrap();
-                        write_stream.write(b"chunk2____", None).await.unwrap();
-                        write_stream.write(b"chunk3____", None).await.unwrap();
-                        write_stream.shutdown().await.unwrap();
-                    })
-                };
-
-                let read_result = read_task.await.unwrap();
-                write_task.await.unwrap();
-
-                assert_eq!(&read_result, b"chunk1____chunk2____chunk3____");
-            },
-        );
+        let mut buffer = [0u8; 11];
+        read_stream.read(&mut buffer, None).await.unwrap();
+        assert_eq!(&buffer, b"hello world");
     }
 
-    #[test]
-    fn buffer_split_streams_partial_reads_test() {
-        crate::run_test("buffer_split_streams_partial_reads_test", async move {
-            let buffer_stream = BufferStream::new();
-            let (mut read_stream, mut write_stream) = buffer_stream.split().await.unwrap();
+    #[crate::test]
+    async fn buffer_read_stream_try_read_test() {
+        let buffer_stream = BufferStream::new();
+        let (mut read_stream, mut write_stream) = buffer_stream.split().await.unwrap();
 
-            // Write data in chunks
-            write_stream.write(b"abcdefgh", None).await.unwrap();
+        // Write data to write stream
+        write_stream.write(b"test data", None).await.unwrap();
 
-            // Read partial data with try_read
-            let mut buffer1 = [0u8; 3];
-            let amount1 = read_stream.try_read(&mut buffer1, None).await.unwrap();
-            assert_eq!(amount1, 3);
-            assert_eq!(&buffer1, b"abc");
+        // Test try_read on read stream
+        let mut buffer = [0u8; 5];
+        let amount = read_stream.try_read(&mut buffer, None).await.unwrap();
+        assert_eq!(amount, 5);
+        assert_eq!(&buffer, b"test ");
 
-            let mut buffer2 = [0u8; 2];
-            let amount2 = read_stream.try_read(&mut buffer2, None).await.unwrap();
-            assert_eq!(amount2, 2);
-            assert_eq!(&buffer2, b"de");
-
-            // Read remaining with exact read
-            let mut buffer3 = [0u8; 3];
-            read_stream.read(&mut buffer3, None).await.unwrap();
-            assert_eq!(&buffer3, b"fgh");
-        });
+        // Read remaining data
+        let mut remaining = [0u8; 4];
+        let remaining_amount = read_stream.try_read(&mut remaining, None).await.unwrap();
+        assert_eq!(remaining_amount, 4);
+        assert_eq!(&remaining, b"data");
     }
 
-    #[test]
-    fn buffer_pipe_split_test() {
-        crate::run_test("buffer_pipe_split_test", async move {
-            let (pipe1, pipe2) = BufferPipe::new();
-            let (mut read_stream, mut write_stream) = pipe1.split().await.unwrap();
+    #[crate::test]
+    async fn buffer_read_stream_read_test() {
+        let buffer_stream = BufferStream::new();
+        let (mut read_stream, mut write_stream) = buffer_stream.split().await.unwrap();
 
-            // Write data using the write stream from split
-            write_stream.write(b"pipe data", None).await.unwrap();
+        // Test reading exact amount
+        write_stream.write(b"exact", None).await.unwrap();
+        let mut buffer = [0u8; 5];
+        read_stream.read(&mut buffer, None).await.unwrap();
+        assert_eq!(&buffer, b"exact");
 
-            // The other pipe should be able to read this data
-            let mut buffer = [0u8; 9];
-            let (mut other_read, mut other_write) = pipe2.split().await.unwrap();
-            other_read.read(&mut buffer, None).await.unwrap();
-            assert_eq!(&buffer, b"pipe data");
+        // Test reading with concurrent writes
+        let write_task = {
+            let mut write_stream = write_stream;
+            crate::operations::spawn_task(async move {
+                write_stream.write(b"part1", None).await.unwrap();
+                write_stream.write(b"part2", None).await.unwrap();
+                write_stream
+            })
+        };
 
-            // Write from the other direction
-            other_write.write(b"reverse", None).await.unwrap();
+        let mut large_buffer = [0u8; 10];
+        read_stream.read(&mut large_buffer, None).await.unwrap();
+        assert_eq!(&large_buffer, b"part1part2");
 
-            // Read from the original read stream
-            let mut reverse_buffer = [0u8; 7];
-            read_stream.read(&mut reverse_buffer, None).await.unwrap();
-            assert_eq!(&reverse_buffer, b"reverse");
-        });
+        write_task.await.unwrap();
     }
 
-    #[test]
-    fn buffer_pipe_try_read_test() {
-        crate::run_test("buffer_pipe_try_read_test", async move {
-            let (mut pipe1, mut pipe2) = BufferPipe::new();
+    #[crate::test]
+    async fn buffer_write_stream_write_test() {
+        let buffer_stream = BufferStream::new();
+        let (read_stream, mut write_stream) = buffer_stream.split().await.unwrap();
 
-            // Write data to pipe2
-            pipe2.write(b"test data for try_read", None).await.unwrap();
+        let read_task = {
+            let mut read_stream = read_stream;
+            crate::operations::spawn_task(async move {
+                // Read back small and medium text
+                let mut buffer1 = [0u8; 24];
+                read_stream.read(&mut buffer1, None).await.unwrap();
 
-            // Use try_read on pipe1 to read partial data
-            let mut buffer1 = [0u8; 4];
-            let amount1 = pipe1.try_read(&mut buffer1, None).await.unwrap();
-            assert_eq!(amount1, 4);
-            assert_eq!(&buffer1, b"test");
+                // Read back large data in chunks
+                let mut large_buffer = Vec::new();
+                let mut temp_buffer = [0u8; 1024];
+                for _ in 0..2 {
+                    read_stream.read(&mut temp_buffer, None).await.unwrap();
+                    large_buffer.extend_from_slice(&temp_buffer);
+                }
+                (buffer1, large_buffer)
+            })
+        };
 
-            // Read remaining data with another try_read
-            let mut buffer2 = [0u8; 18];
-            let amount2 = pipe1.try_read(&mut buffer2, None).await.unwrap();
-            assert_eq!(amount2, 18);
-            assert_eq!(&buffer2, b" data for try_read");
-        });
+        // Test writing various sizes
+        write_stream.write(b"small", None).await.unwrap();
+        write_stream
+            .write(b" medium sized text ", None)
+            .await
+            .unwrap();
+
+        // Test writing large data that exceeds internal buffer
+        let large_data = [42u8; 2048];
+        write_stream.write(&large_data, None).await.unwrap();
+
+        let (buffer1, buffer2) = read_task.await.unwrap();
+        assert_eq!(&buffer1, b"small medium sized text ");
+        assert_eq!(&buffer2, &large_data);
     }
 
-    #[test]
-    fn buffer_pipe_read_test() {
-        crate::run_test("buffer_pipe_read_test", async move {
-            let (mut pipe1, mut pipe2) = BufferPipe::new();
+    #[crate::test]
+    async fn buffer_write_stream_shutdown_test() {
+        let buffer_stream = BufferStream::new();
+        let (mut read_stream, mut write_stream) = buffer_stream.split().await.unwrap();
 
-            // Test reading exact amount
-            pipe2.write(b"exact", None).await.unwrap();
-            let mut buffer = [0u8; 5];
-            pipe1.read(&mut buffer, None).await.unwrap();
-            assert_eq!(&buffer, b"exact");
+        // Write some data before shutdown
+        write_stream.write(b"before shutdown", None).await.unwrap();
 
-            // Test reading with concurrent writes
-            let write_task = {
-                let mut pipe2 = pipe2;
-                crate::operations::spawn_task(async move {
-                    pipe2.write(b"hello", None).await.unwrap();
-                    pipe2.write(b"world", None).await.unwrap();
-                    pipe2
-                })
-            };
+        // Shutdown write stream
+        write_stream.shutdown().await.unwrap();
 
-            let mut large_buffer = [0u8; 10];
-            pipe1.read(&mut large_buffer, None).await.unwrap();
-            assert_eq!(&large_buffer, b"helloworld");
+        // Should be able to read existing data
+        let mut buffer = [0u8; 15];
+        read_stream.read(&mut buffer, None).await.unwrap();
+        assert_eq!(&buffer, b"before shutdown");
 
-            write_task.await.unwrap();
-        });
+        // Writing after shutdown should fail
+        let result = write_stream.write(b"after shutdown", None).await;
+        assert!(result.is_err());
+
+        // Reading after shutdown when no data is available should fail
+        let mut empty_buffer = [0u8; 1];
+        let result = read_stream.read(&mut empty_buffer, None).await;
+        assert!(result.is_err());
     }
 
-    #[test]
-    fn buffer_pipe_write_test() {
-        crate::run_test("buffer_pipe_write_test", async move {
-            let (mut pipe1, pipe2) = BufferPipe::new();
+    #[crate::test]
+    async fn buffer_write_stream_close_test() {
+        let buffer_stream = BufferStream::new();
+        let (mut read_stream, mut write_stream) = buffer_stream.split().await.unwrap();
 
-            // Test writing various sizes
-            pipe1.write(b"small", None).await.unwrap();
-            pipe1.write(b" medium sized text ", None).await.unwrap();
+        // Write some data before close
+        write_stream.write(b"before close", None).await.unwrap();
 
-            // Test writing large data that exceeds internal buffer
-            let large_data = [42u8; 2048];
+        // Close write stream
+        write_stream.close().await.unwrap();
 
-            let read_task = {
-                let mut pipe2 = pipe2;
-                crate::operations::spawn_task(async move {
-                    // Read back small and medium text
-                    let mut buffer1 = [0u8; 24];
-                    pipe2.read(&mut buffer1, None).await.unwrap();
+        // Should be able to read existing data
+        let mut buffer = [0u8; 12];
+        read_stream.read(&mut buffer, None).await.unwrap();
+        assert_eq!(&buffer, b"before close");
 
-                    // Read back large data in chunks
-                    let mut large_buffer = Vec::new();
-                    let mut temp_buffer = [0u8; 1024];
-                    for _ in 0..2 {
-                        pipe2.read(&mut temp_buffer, None).await.unwrap();
-                        large_buffer.extend_from_slice(&temp_buffer);
-                    }
-                    (buffer1, large_buffer)
-                })
-            };
+        // Writing after close should fail
+        let result = write_stream.write(b"after close", None).await;
+        assert!(result.is_err());
 
-            pipe1.write(&large_data, None).await.unwrap();
-
-            let (buffer1, buffer2) = read_task.await.unwrap();
-            assert_eq!(&buffer1, b"small medium sized text ");
-            assert_eq!(&buffer2, &large_data);
-        });
+        // Reading after close when no data is available should fail
+        let mut empty_buffer = [0u8; 1];
+        let result = read_stream.read(&mut empty_buffer, None).await;
+        assert!(result.is_err());
     }
 
-    #[test]
-    fn buffer_pipe_shutdown_test() {
-        crate::run_test("buffer_pipe_shutdown_test", async move {
-            let (mut pipe1, mut pipe2) = BufferPipe::new();
+    #[crate::test]
+    async fn buffer_split_streams_concurrent_operations_test() {
+        let buffer_stream = BufferStream::new();
+        let (read_stream, write_stream) = buffer_stream.split().await.unwrap();
 
-            // Write some data before shutdown
-            pipe1.write(b"before shutdown", None).await.unwrap();
+        let read_task = {
+            let mut read_stream = read_stream;
+            crate::operations::spawn_task(async move {
+                let mut result = Vec::new();
+                let mut buffer = [0u8; 10];
 
-            // Shutdown pipe1
-            pipe1.shutdown().await.unwrap();
+                // Read three chunks
+                for _ in 0..3 {
+                    read_stream.read(&mut buffer, None).await.unwrap();
+                    result.extend_from_slice(&buffer);
+                }
+                result
+            })
+        };
 
-            // Should be able to read existing data from pipe2
-            let mut buffer = [0u8; 15];
-            pipe2.read(&mut buffer, None).await.unwrap();
-            assert_eq!(&buffer, b"before shutdown");
+        let write_task = {
+            let mut write_stream = write_stream;
+            crate::operations::spawn_task(async move {
+                write_stream.write(b"chunk1____", None).await.unwrap();
+                write_stream.write(b"chunk2____", None).await.unwrap();
+                write_stream.write(b"chunk3____", None).await.unwrap();
+                write_stream.shutdown().await.unwrap();
+            })
+        };
 
-            // Writing after shutdown should fail
-            let result = pipe1.write(b"after shutdown", None).await;
-            assert!(result.is_err());
+        let read_result = read_task.await.unwrap();
+        write_task.await.unwrap();
 
-            // Reading after shutdown when no data is available should fail
-            let mut empty_buffer = [0u8; 1];
-            let result = pipe2.read(&mut empty_buffer, None).await;
-            assert!(result.is_err());
-        });
+        assert_eq!(&read_result, b"chunk1____chunk2____chunk3____");
     }
 
-    #[test]
-    fn buffer_pipe_close_test() {
-        crate::run_test("buffer_pipe_close_test", async move {
-            let (mut pipe1, mut pipe2) = BufferPipe::new();
+    #[crate::test]
+    async fn buffer_split_streams_partial_reads_test() {
+        let buffer_stream = BufferStream::new();
+        let (mut read_stream, mut write_stream) = buffer_stream.split().await.unwrap();
 
-            // Write some data before close
-            pipe1.write(b"before close", None).await.unwrap();
+        // Write data in chunks
+        write_stream.write(b"abcdefgh", None).await.unwrap();
 
-            // Close pipe1
-            pipe1.close().await.unwrap();
+        // Read partial data with try_read
+        let mut buffer1 = [0u8; 3];
+        let amount1 = read_stream.try_read(&mut buffer1, None).await.unwrap();
+        assert_eq!(amount1, 3);
+        assert_eq!(&buffer1, b"abc");
 
-            // Should be able to read existing data from pipe2
-            let mut buffer = [0u8; 12];
-            pipe2.read(&mut buffer, None).await.unwrap();
-            assert_eq!(&buffer, b"before close");
+        let mut buffer2 = [0u8; 2];
+        let amount2 = read_stream.try_read(&mut buffer2, None).await.unwrap();
+        assert_eq!(amount2, 2);
+        assert_eq!(&buffer2, b"de");
 
-            // Writing after close should fail
-            let result = pipe1.write(b"after close", None).await;
-            assert!(result.is_err());
-
-            // Reading after close when no data is available should fail
-            let mut empty_buffer = [0u8; 1];
-            let result = pipe2.read(&mut empty_buffer, None).await;
-            assert!(result.is_err());
-        });
+        // Read remaining with exact read
+        let mut buffer3 = [0u8; 3];
+        read_stream.read(&mut buffer3, None).await.unwrap();
+        assert_eq!(&buffer3, b"fgh");
     }
 
-    #[test]
-    fn buffer_stream_default_test() {
-        crate::run_test("buffer_stream_default_test", async move {
-            let stream = BufferStream::default();
+    #[crate::test]
+    async fn buffer_pipe_split_test() {
+        let (pipe1, pipe2) = BufferPipe::new();
+        let (mut read_stream, mut write_stream) = pipe1.split().await.unwrap();
 
-            // Test that default stream works like a new stream
-            stream.write(b"default test", None).await.unwrap();
+        // Write data using the write stream from split
+        write_stream.write(b"pipe data", None).await.unwrap();
 
-            let mut buffer = [0u8; 12];
-            stream.read(&mut buffer, None).await.unwrap();
-            assert_eq!(&buffer, b"default test");
-        });
+        // The other pipe should be able to read this data
+        let mut buffer = [0u8; 9];
+        let (mut other_read, mut other_write) = pipe2.split().await.unwrap();
+        other_read.read(&mut buffer, None).await.unwrap();
+        assert_eq!(&buffer, b"pipe data");
+
+        // Write from the other direction
+        other_write.write(b"reverse", None).await.unwrap();
+
+        // Read from the original read stream
+        let mut reverse_buffer = [0u8; 7];
+        read_stream.read(&mut reverse_buffer, None).await.unwrap();
+        assert_eq!(&reverse_buffer, b"reverse");
     }
 
-    #[test]
-    fn buffer_stream_shutdown_test() {
-        crate::run_test("buffer_stream_shutdown_test", async move {
-            let buffer_stream = BufferStream::new();
+    #[crate::test]
+    async fn buffer_pipe_try_read_test() {
+        let (mut pipe1, mut pipe2) = BufferPipe::new();
 
-            // Write some data before shutdown
-            buffer_stream.write(b"before shutdown", None).await.unwrap();
+        // Write data to pipe2
+        pipe2.write(b"test data for try_read", None).await.unwrap();
 
-            // Shutdown the stream
-            buffer_stream.shutdown().await.unwrap();
+        // Use try_read on pipe1 to read partial data
+        let mut buffer1 = [0u8; 4];
+        let amount1 = pipe1.try_read(&mut buffer1, None).await.unwrap();
+        assert_eq!(amount1, 4);
+        assert_eq!(&buffer1, b"test");
 
-            // Should be able to read existing data
-            let mut buffer = [0u8; 15];
-            buffer_stream.read(&mut buffer, None).await.unwrap();
-            assert_eq!(&buffer, b"before shutdown");
-
-            // Writing after shutdown should fail
-            let result = buffer_stream.write(b"after shutdown", None).await;
-            assert!(result.is_err());
-
-            // Reading after shutdown when no data is available should fail
-            let mut empty_buffer = [0u8; 1];
-            let result = buffer_stream.read(&mut empty_buffer, None).await;
-            assert!(result.is_err());
-
-            // try_read should also fail after shutdown with no data
-            let result = buffer_stream.try_read(&mut empty_buffer, None).await;
-            assert!(result.is_err());
-        });
+        // Read remaining data with another try_read
+        let mut buffer2 = [0u8; 18];
+        let amount2 = pipe1.try_read(&mut buffer2, None).await.unwrap();
+        assert_eq!(amount2, 18);
+        assert_eq!(&buffer2, b" data for try_read");
     }
 
-    #[test]
-    fn buffer_stream_close_test() {
-        crate::run_test("buffer_stream_close_test", async move {
-            let buffer_stream = BufferStream::new();
+    #[crate::test]
+    async fn buffer_pipe_read_test() {
+        let (mut pipe1, mut pipe2) = BufferPipe::new();
 
-            // Write some data before close
-            buffer_stream.write(b"before close", None).await.unwrap();
+        // Test reading exact amount
+        pipe2.write(b"exact", None).await.unwrap();
+        let mut buffer = [0u8; 5];
+        pipe1.read(&mut buffer, None).await.unwrap();
+        assert_eq!(&buffer, b"exact");
 
-            // Close the stream
-            buffer_stream.close().await.unwrap();
+        // Test reading with concurrent writes
+        let write_task = {
+            let mut pipe2 = pipe2;
+            crate::operations::spawn_task(async move {
+                pipe2.write(b"hello", None).await.unwrap();
+                pipe2.write(b"world", None).await.unwrap();
+                pipe2
+            })
+        };
 
-            // Should be able to read existing data
-            let mut buffer = [0u8; 12];
-            buffer_stream.read(&mut buffer, None).await.unwrap();
-            assert_eq!(&buffer, b"before close");
+        let mut large_buffer = [0u8; 10];
+        pipe1.read(&mut large_buffer, None).await.unwrap();
+        assert_eq!(&large_buffer, b"helloworld");
 
-            // Writing after close should fail
-            let result = buffer_stream.write(b"after close", None).await;
-            assert!(result.is_err());
+        write_task.await.unwrap();
+    }
 
-            // Reading after close when no data is available should fail
-            let mut empty_buffer = [0u8; 1];
-            let result = buffer_stream.read(&mut empty_buffer, None).await;
-            assert!(result.is_err());
+    #[crate::test]
+    async fn buffer_pipe_write_test() {
+        let (mut pipe1, pipe2) = BufferPipe::new();
 
-            // try_read should also fail after close with no data
-            let result = buffer_stream.try_read(&mut empty_buffer, None).await;
-            assert!(result.is_err());
-        });
+        // Test writing various sizes
+        pipe1.write(b"small", None).await.unwrap();
+        pipe1.write(b" medium sized text ", None).await.unwrap();
+
+        // Test writing large data that exceeds internal buffer
+        let large_data = [42u8; 2048];
+
+        let read_task = {
+            let mut pipe2 = pipe2;
+            crate::operations::spawn_task(async move {
+                // Read back small and medium text
+                let mut buffer1 = [0u8; 24];
+                pipe2.read(&mut buffer1, None).await.unwrap();
+
+                // Read back large data in chunks
+                let mut large_buffer = Vec::new();
+                let mut temp_buffer = [0u8; 1024];
+                for _ in 0..2 {
+                    pipe2.read(&mut temp_buffer, None).await.unwrap();
+                    large_buffer.extend_from_slice(&temp_buffer);
+                }
+                (buffer1, large_buffer)
+            })
+        };
+
+        pipe1.write(&large_data, None).await.unwrap();
+
+        let (buffer1, buffer2) = read_task.await.unwrap();
+        assert_eq!(&buffer1, b"small medium sized text ");
+        assert_eq!(&buffer2, &large_data);
+    }
+
+    #[crate::test]
+    async fn buffer_pipe_shutdown_test() {
+        let (mut pipe1, mut pipe2) = BufferPipe::new();
+
+        // Write some data before shutdown
+        pipe1.write(b"before shutdown", None).await.unwrap();
+
+        // Shutdown pipe1
+        pipe1.shutdown().await.unwrap();
+
+        // Should be able to read existing data from pipe2
+        let mut buffer = [0u8; 15];
+        pipe2.read(&mut buffer, None).await.unwrap();
+        assert_eq!(&buffer, b"before shutdown");
+
+        // Writing after shutdown should fail
+        let result = pipe1.write(b"after shutdown", None).await;
+        assert!(result.is_err());
+
+        // Reading after shutdown when no data is available should fail
+        let mut empty_buffer = [0u8; 1];
+        let result = pipe2.read(&mut empty_buffer, None).await;
+        assert!(result.is_err());
+    }
+
+    #[crate::test]
+    async fn buffer_pipe_close_test() {
+        let (mut pipe1, mut pipe2) = BufferPipe::new();
+
+        // Write some data before close
+        pipe1.write(b"before close", None).await.unwrap();
+
+        // Close pipe1
+        pipe1.close().await.unwrap();
+
+        // Should be able to read existing data from pipe2
+        let mut buffer = [0u8; 12];
+        pipe2.read(&mut buffer, None).await.unwrap();
+        assert_eq!(&buffer, b"before close");
+
+        // Writing after close should fail
+        let result = pipe1.write(b"after close", None).await;
+        assert!(result.is_err());
+
+        // Reading after close when no data is available should fail
+        let mut empty_buffer = [0u8; 1];
+        let result = pipe2.read(&mut empty_buffer, None).await;
+        assert!(result.is_err());
+    }
+
+    #[crate::test]
+    async fn buffer_stream_default_test() {
+        let stream = BufferStream::default();
+
+        // Test that default stream works like a new stream
+        stream.write(b"default test", None).await.unwrap();
+
+        let mut buffer = [0u8; 12];
+        stream.read(&mut buffer, None).await.unwrap();
+        assert_eq!(&buffer, b"default test");
+    }
+
+    #[crate::test]
+    async fn buffer_stream_shutdown_test() {
+        let buffer_stream = BufferStream::new();
+
+        // Write some data before shutdown
+        buffer_stream.write(b"before shutdown", None).await.unwrap();
+
+        // Shutdown the stream
+        buffer_stream.shutdown().await.unwrap();
+
+        // Should be able to read existing data
+        let mut buffer = [0u8; 15];
+        buffer_stream.read(&mut buffer, None).await.unwrap();
+        assert_eq!(&buffer, b"before shutdown");
+
+        // Writing after shutdown should fail
+        let result = buffer_stream.write(b"after shutdown", None).await;
+        assert!(result.is_err());
+
+        // Reading after shutdown when no data is available should fail
+        let mut empty_buffer = [0u8; 1];
+        let result = buffer_stream.read(&mut empty_buffer, None).await;
+        assert!(result.is_err());
+
+        // try_read should also fail after shutdown with no data
+        let result = buffer_stream.try_read(&mut empty_buffer, None).await;
+        assert!(result.is_err());
+    }
+
+    #[crate::test]
+    async fn buffer_stream_close_test() {
+        let buffer_stream = BufferStream::new();
+
+        // Write some data before close
+        buffer_stream.write(b"before close", None).await.unwrap();
+
+        // Close the stream
+        buffer_stream.close().await.unwrap();
+
+        // Should be able to read existing data
+        let mut buffer = [0u8; 12];
+        buffer_stream.read(&mut buffer, None).await.unwrap();
+        assert_eq!(&buffer, b"before close");
+
+        // Writing after close should fail
+        let result = buffer_stream.write(b"after close", None).await;
+        assert!(result.is_err());
+
+        // Reading after close when no data is available should fail
+        let mut empty_buffer = [0u8; 1];
+        let result = buffer_stream.read(&mut empty_buffer, None).await;
+        assert!(result.is_err());
+
+        // try_read should also fail after close with no data
+        let result = buffer_stream.try_read(&mut empty_buffer, None).await;
+        assert!(result.is_err());
     }
 }

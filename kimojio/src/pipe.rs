@@ -54,40 +54,38 @@ mod test {
 
     use crate::{operations, pipe::pipe};
 
-    #[test]
-    fn pipe_test() {
-        crate::run_test("pipe_test", async {
-            let (read, write) = pipe().unwrap();
+    #[crate::test]
+    async fn pipe_test() {
+        let (read, write) = pipe().unwrap();
 
-            let output1 = [b'h', b'e', b'l', b'l', b'o'];
-            let output2 = [b'w', b'o', b'r', b'l', b'd'];
-            let output = [IoSlice::new(&output1), IoSlice::new(&output2)];
-            operations::writev(&write, &output[..], None).await.unwrap();
-            let mut buf1 = [0u8; 3];
-            let mut buf2 = [0u8; 7];
-            let ptr1 = buf1.as_mut_ptr();
-            let ptr2 = buf2.as_mut_ptr();
-            let iovec1 = iovec {
-                iov_base: ptr1 as *mut c_void,
-                iov_len: buf1.len(),
-            };
-            let iovec2 = iovec {
-                iov_base: ptr2 as *mut c_void,
-                iov_len: buf2.len(),
-            };
-            let mut input = &mut [iovec1, iovec2][..];
-            while !input.is_empty() {
-                let mut amount = operations::readv(&read, input, None).await.unwrap();
-                while amount > 0 {
-                    if amount >= input[0].iov_len {
-                        amount -= input[0].iov_len;
-                        input = &mut input[1..];
-                    } else {
-                        input[0].iov_base = unsafe { input[0].iov_base.add(amount) };
-                        input[0].iov_len -= amount;
-                    }
+        let output1 = [b'h', b'e', b'l', b'l', b'o'];
+        let output2 = [b'w', b'o', b'r', b'l', b'd'];
+        let output = [IoSlice::new(&output1), IoSlice::new(&output2)];
+        operations::writev(&write, &output[..], None).await.unwrap();
+        let mut buf1 = [0u8; 3];
+        let mut buf2 = [0u8; 7];
+        let ptr1 = buf1.as_mut_ptr();
+        let ptr2 = buf2.as_mut_ptr();
+        let iovec1 = iovec {
+            iov_base: ptr1 as *mut c_void,
+            iov_len: buf1.len(),
+        };
+        let iovec2 = iovec {
+            iov_base: ptr2 as *mut c_void,
+            iov_len: buf2.len(),
+        };
+        let mut input = &mut [iovec1, iovec2][..];
+        while !input.is_empty() {
+            let mut amount = operations::readv(&read, input, None).await.unwrap();
+            while amount > 0 {
+                if amount >= input[0].iov_len {
+                    amount -= input[0].iov_len;
+                    input = &mut input[1..];
+                } else {
+                    input[0].iov_base = unsafe { input[0].iov_base.add(amount) };
+                    input[0].iov_len -= amount;
                 }
             }
-        });
+        }
     }
 }

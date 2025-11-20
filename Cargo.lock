@@ -534,6 +534,7 @@ dependencies = [
  "futures",
  "impls",
  "intrusive-collections",
+ "kimojio-macros",
  "kimojio-tls",
  "libc",
  "openssl",
@@ -546,6 +547,14 @@ dependencies = [
  "tempfile",
  "uuid",
  "zerocopy",
+]
+
+[[package]]
+name = "kimojio-macros"
+version = "0.13.2"
+dependencies = [
+ "quote",
+ "syn",
 ]
 
 [[package]]

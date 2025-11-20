@@ -440,416 +440,385 @@ mod test {
         }
     }
 
-    #[test]
-    pub fn channel_test() {
-        crate::run_test("channel_test", async {
-            let (client, server) = AsyncBiChannel::new();
-            let t1 = {
-                operations::spawn_task(async move {
-                    loop {
-                        let message = server.recv().await.unwrap();
-                        if message > 0 {
-                            server.send(message + 1).await.expect("channel closed");
-                        } else {
-                            break;
-                        }
+    #[crate::test]
+    async fn channel_test() {
+        let (client, server) = AsyncBiChannel::new();
+        let t1 = {
+            operations::spawn_task(async move {
+                loop {
+                    let message = server.recv().await.unwrap();
+                    if message > 0 {
+                        server.send(message + 1).await.expect("channel closed");
+                    } else {
+                        break;
                     }
-                })
-            };
+                }
+            })
+        };
 
-            for message in 1..10 {
+        for message in 1..10 {
+            client.send(message).await.expect("channel closed");
+            let response = client.recv().await.unwrap();
+            assert_eq!(response, message + 1);
+        }
+
+        client.send(-1).await.expect("channel closed");
+        t1.await.unwrap();
+    }
+
+    #[crate::test]
+    async fn channel_test_try() {
+        let (client, server) = AsyncBiChannel::new();
+        let t1 = {
+            operations::spawn_task(async move {
+                loop {
+                    let message = if let Some(message) = server.try_recv().expect("channel closed")
+                    {
+                        message
+                    } else {
+                        server.recv().await.unwrap()
+                    };
+                    if message > 0 {
+                        server.send(message + 1).await.expect("channel closed");
+                    } else {
+                        break;
+                    }
+                }
+            })
+        };
+
+        for message in 1..10 {
+            for _ in 0..2 {
                 client.send(message).await.expect("channel closed");
-                let response = client.recv().await.unwrap();
+            }
+            for _ in 0..2 {
+                let response = if let Some(response) = client.try_recv().expect("channel closed") {
+                    response
+                } else {
+                    client.recv().await.unwrap()
+                };
                 assert_eq!(response, message + 1);
             }
+        }
 
-            client.send(-1).await.expect("channel closed");
-            t1.await.unwrap();
-        });
+        client.send(-1).await.expect("channel closed");
+        t1.await.unwrap();
     }
 
-    #[test]
-    pub fn channel_test_try() {
-        crate::run_test("channel_test", async {
-            let (client, server) = AsyncBiChannel::new();
-            let t1 = {
-                operations::spawn_task(async move {
-                    loop {
-                        let message =
-                            if let Some(message) = server.try_recv().expect("channel closed") {
-                                message
-                            } else {
-                                server.recv().await.unwrap()
-                            };
-                        if message > 0 {
-                            server.send(message + 1).await.expect("channel closed");
-                        } else {
-                            break;
-                        }
+    #[crate::test]
+    async fn unbounded_channel_test() {
+        let (channel1_tx, channel1_rx) = async_channel_unbounded();
+        let (channel2_tx, channel2_rx) = async_channel_unbounded();
+        let t1 = {
+            operations::spawn_task(async move {
+                loop {
+                    let message = channel1_rx.recv().await.unwrap();
+                    if message > 0 {
+                        channel2_tx.send(message + 1).unwrap();
+                    } else {
+                        break;
                     }
-                })
-            };
-
-            for message in 1..10 {
-                for _ in 0..2 {
-                    client.send(message).await.expect("channel closed");
                 }
-                for _ in 0..2 {
-                    let response =
-                        if let Some(response) = client.try_recv().expect("channel closed") {
-                            response
-                        } else {
-                            client.recv().await.unwrap()
-                        };
-                    assert_eq!(response, message + 1);
-                }
-            }
+            })
+        };
 
-            client.send(-1).await.expect("channel closed");
-            t1.await.unwrap();
+        for message in 1..10 {
+            channel1_tx.send(message).unwrap();
+            let response = channel2_rx.recv().await.unwrap();
+            assert_eq!(response, message + 1);
+        }
+
+        for message in 1..10 {
+            channel1_tx.send(message).unwrap();
+            channel1_tx.send(10 * message).unwrap();
+            let response = channel2_rx.recv().await.unwrap();
+            assert_eq!(response, message + 1);
+            let response = channel2_rx.recv().await.unwrap();
+            assert_eq!(response, 10 * message + 1);
+        }
+
+        channel1_tx.send(-1).unwrap();
+        t1.await.unwrap();
+    }
+
+    #[crate::test]
+    async fn test_recv_when_sender_dropped() {
+        let (channel1_tx, channel1_rx) = async_channel_unbounded();
+        channel1_tx.send(1).unwrap();
+        channel1_tx.send(2).unwrap();
+        drop(channel1_tx);
+
+        assert_eq!(1, channel1_rx.recv().await.unwrap());
+        assert_eq!(2, channel1_rx.recv().await.unwrap());
+        assert_eq!(Err(ChannelError::Closed), channel1_rx.recv().await);
+    }
+    #[crate::test]
+    async fn test_send_when_receiver_dropped() {
+        let (channel1_tx, channel1_rx) = async_channel();
+        drop(channel1_rx);
+        assert_eq!(Err(SendError::ChannelClosed(3)), channel1_tx.try_send(3));
+    }
+
+    #[crate::test]
+    async fn test_async_channel_recv_when_sender_dropped() {
+        let (channel1_tx, channel1_rx) = async_channel();
+        channel1_tx.send(1).await.unwrap();
+        drop(channel1_tx);
+
+        assert_eq!(1, channel1_rx.recv().await.unwrap());
+        assert_eq!(Err(ChannelError::Closed), channel1_rx.recv().await);
+
+        let (channel1_tx, channel1_rx) = async_channel::<i32>();
+        drop(channel1_tx);
+
+        assert_eq!(Err(ChannelError::Closed), channel1_rx.recv().await);
+    }
+
+    #[crate::test]
+    async fn test_async_channel_unbounded_with_capacity() {
+        let (tx, rx) = async_channel_unbounded_with_capacity(5);
+
+        // Test that it works like a normal unbounded channel
+        for i in 1..=10 {
+            tx.send(i).unwrap();
+        }
+
+        for i in 1..=10 {
+            let received = rx.recv().await.unwrap();
+            assert_eq!(received, i);
+        }
+    }
+
+    #[crate::test]
+    async fn test_sender_unbounded_close_and_status() {
+        let (tx, rx) = async_channel_unbounded();
+
+        // Test is_empty and len when empty
+        assert!(tx.is_empty());
+        assert_eq!(tx.len(), 0);
+
+        // Send some messages
+        tx.send(1).unwrap();
+        tx.send(2).unwrap();
+        tx.send(3).unwrap();
+
+        // Test is_empty and len with items
+        assert!(!tx.is_empty());
+        assert_eq!(tx.len(), 3);
+
+        // Receive one message
+        let msg = rx.recv().await.unwrap();
+        assert_eq!(msg, 1);
+        assert_eq!(tx.len(), 2);
+
+        // Test close functionality
+        tx.close();
+
+        // Should still be able to receive existing messages
+        let msg = rx.recv().await.unwrap();
+        assert_eq!(msg, 2);
+        let msg = rx.recv().await.unwrap();
+        assert_eq!(msg, 3);
+
+        // Now should get channel closed error
+        assert_eq!(Err(ChannelError::Closed), rx.recv().await);
+
+        // Note: Unbounded channels may still allow sending after close()
+        // but will be closed when all senders are dropped
+    }
+
+    #[crate::test]
+    async fn test_receiver_unbounded_try_recv() {
+        let (tx, rx) = async_channel_unbounded();
+
+        // Should return None when empty
+        assert_eq!(Ok(None), rx.try_recv());
+
+        // Send a message
+        tx.send(42).unwrap();
+
+        // Should receive the message
+        assert_eq!(Ok(Some(42)), rx.try_recv());
+
+        // Should return None again when empty
+        assert_eq!(Ok(None), rx.try_recv());
+
+        // Close the channel
+        tx.close();
+
+        // Should return ChannelError::Closed
+        assert_eq!(Err(ChannelError::Closed), rx.try_recv());
+    }
+
+    #[crate::test]
+    async fn test_receiver_unbounded_recv_with_deadline() {
+        let (tx, rx) = async_channel_unbounded();
+
+        // Test timeout
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(10);
+        let result = rx.recv_with_deadline(Some(deadline)).await;
+        assert!(result.is_err());
+
+        // Test successful receive with deadline
+        tx.send(123).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(100);
+        let result = rx.recv_with_deadline(Some(deadline)).await.unwrap();
+        assert_eq!(result, 123);
+
+        // Test no deadline (should behave like normal recv)
+        let send_task = operations::spawn_task(async move {
+            tx.send(456).unwrap();
         });
-    }
 
-    #[test]
-    pub fn unbounded_channel_test() {
-        crate::run_test("unbounded_channel_test", async {
-            let (channel1_tx, channel1_rx) = async_channel_unbounded();
-            let (channel2_tx, channel2_rx) = async_channel_unbounded();
-            let t1 = {
-                operations::spawn_task(async move {
-                    loop {
-                        let message = channel1_rx.recv().await.unwrap();
-                        if message > 0 {
-                            channel2_tx.send(message + 1).unwrap();
-                        } else {
-                            break;
-                        }
-                    }
-                })
-            };
-
-            for message in 1..10 {
-                channel1_tx.send(message).unwrap();
-                let response = channel2_rx.recv().await.unwrap();
-                assert_eq!(response, message + 1);
-            }
-
-            for message in 1..10 {
-                channel1_tx.send(message).unwrap();
-                channel1_tx.send(10 * message).unwrap();
-                let response = channel2_rx.recv().await.unwrap();
-                assert_eq!(response, message + 1);
-                let response = channel2_rx.recv().await.unwrap();
-                assert_eq!(response, 10 * message + 1);
-            }
-
-            channel1_tx.send(-1).unwrap();
-            t1.await.unwrap();
+        let recv_task = operations::spawn_task(async move {
+            let result = rx.recv_with_deadline(None).await.unwrap();
+            assert_eq!(result, 456);
         });
+
+        send_task.await.unwrap();
+        recv_task.await.unwrap();
     }
 
-    #[test]
-    pub fn test_recv_when_sender_dropped() {
-        crate::run_test("test_recv_when_sender_dropped", async {
-            let (channel1_tx, channel1_rx) = async_channel_unbounded();
-            channel1_tx.send(1).unwrap();
-            channel1_tx.send(2).unwrap();
-            drop(channel1_tx);
+    #[crate::test]
+    async fn test_sender_unbounded_clone() {
+        let (tx, rx) = async_channel_unbounded();
+        let tx_clone = tx.clone();
 
-            assert_eq!(1, channel1_rx.recv().await.unwrap());
-            assert_eq!(2, channel1_rx.recv().await.unwrap());
-            assert_eq!(Err(ChannelError::Closed), channel1_rx.recv().await);
-        })
-    }
-    #[test]
-    pub fn test_send_when_receiver_dropped() {
-        crate::run_test("test_send_when_receiver_dropped", async {
-            let (channel1_tx, channel1_rx) = async_channel();
-            drop(channel1_rx);
-            assert_eq!(Err(SendError::ChannelClosed(3)), channel1_tx.try_send(3));
-        })
-    }
+        // Both senders should work
+        tx.send(1).unwrap();
+        tx_clone.send(2).unwrap();
 
-    #[test]
-    pub fn test_async_channel_recv_when_sender_dropped() {
-        crate::run_test("test_async_channel_recv_when_sender_dropped", async {
-            let (channel1_tx, channel1_rx) = async_channel();
-            channel1_tx.send(1).await.unwrap();
-            drop(channel1_tx);
+        // Receive both messages
+        assert_eq!(1, rx.recv().await.unwrap());
+        assert_eq!(2, rx.recv().await.unwrap());
 
-            assert_eq!(1, channel1_rx.recv().await.unwrap());
-            assert_eq!(Err(ChannelError::Closed), channel1_rx.recv().await);
+        // Drop original sender
+        drop(tx);
 
-            let (channel1_tx, channel1_rx) = async_channel::<i32>();
-            drop(channel1_tx);
+        // Clone should still work
+        tx_clone.send(3).unwrap();
+        assert_eq!(3, rx.recv().await.unwrap());
 
-            assert_eq!(Err(ChannelError::Closed), channel1_rx.recv().await);
-        })
+        // Drop clone - now channel should close
+        drop(tx_clone);
+        assert_eq!(Err(ChannelError::Closed), rx.recv().await);
     }
 
-    #[test]
-    pub fn test_async_channel_unbounded_with_capacity() {
-        crate::run_test("test_async_channel_unbounded_with_capacity", async {
-            let (tx, rx) = async_channel_unbounded_with_capacity(5);
+    #[crate::test]
+    async fn test_sender_clone() {
+        let (tx, rx) = async_channel();
+        let tx_clone = tx.clone();
 
-            // Test that it works like a normal unbounded channel
-            for i in 1..=10 {
-                tx.send(i).unwrap();
-            }
-
-            for i in 1..=10 {
-                let received = rx.recv().await.unwrap();
-                assert_eq!(received, i);
-            }
-        })
-    }
-
-    #[test]
-    pub fn test_sender_unbounded_close_and_status() {
-        crate::run_test("test_sender_unbounded_close_and_status", async {
-            let (tx, rx) = async_channel_unbounded();
-
-            // Test is_empty and len when empty
-            assert!(tx.is_empty());
-            assert_eq!(tx.len(), 0);
-
-            // Send some messages
-            tx.send(1).unwrap();
-            tx.send(2).unwrap();
-            tx.send(3).unwrap();
-
-            // Test is_empty and len with items
-            assert!(!tx.is_empty());
-            assert_eq!(tx.len(), 3);
-
-            // Receive one message
-            let msg = rx.recv().await.unwrap();
-            assert_eq!(msg, 1);
-            assert_eq!(tx.len(), 2);
-
-            // Test close functionality
-            tx.close();
-
-            // Should still be able to receive existing messages
-            let msg = rx.recv().await.unwrap();
-            assert_eq!(msg, 2);
-            let msg = rx.recv().await.unwrap();
-            assert_eq!(msg, 3);
-
-            // Now should get channel closed error
-            assert_eq!(Err(ChannelError::Closed), rx.recv().await);
-
-            // Note: Unbounded channels may still allow sending after close()
-            // but will be closed when all senders are dropped
-        })
-    }
-
-    #[test]
-    pub fn test_receiver_unbounded_try_recv() {
-        crate::run_test("test_receiver_unbounded_try_recv", async {
-            let (tx, rx) = async_channel_unbounded();
-
-            // Should return None when empty
-            assert_eq!(Ok(None), rx.try_recv());
-
-            // Send a message
-            tx.send(42).unwrap();
-
-            // Should receive the message
-            assert_eq!(Ok(Some(42)), rx.try_recv());
-
-            // Should return None again when empty
-            assert_eq!(Ok(None), rx.try_recv());
-
-            // Close the channel
-            tx.close();
-
-            // Should return ChannelError::Closed
-            assert_eq!(Err(ChannelError::Closed), rx.try_recv());
-        })
-    }
-
-    #[test]
-    pub fn test_receiver_unbounded_recv_with_deadline() {
-        crate::run_test("test_receiver_unbounded_recv_with_deadline", async {
-            let (tx, rx) = async_channel_unbounded();
-
-            // Test timeout
-            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(10);
-            let result = rx.recv_with_deadline(Some(deadline)).await;
-            assert!(result.is_err());
-
-            // Test successful receive with deadline
-            tx.send(123).unwrap();
-            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(100);
-            let result = rx.recv_with_deadline(Some(deadline)).await.unwrap();
-            assert_eq!(result, 123);
-
-            // Test no deadline (should behave like normal recv)
-            let send_task = operations::spawn_task(async move {
-                tx.send(456).unwrap();
-            });
-
-            let recv_task = operations::spawn_task(async move {
-                let result = rx.recv_with_deadline(None).await.unwrap();
-                assert_eq!(result, 456);
-            });
-
-            send_task.await.unwrap();
-            recv_task.await.unwrap();
-        })
-    }
-
-    #[test]
-    pub fn test_sender_unbounded_clone() {
-        crate::run_test("test_sender_unbounded_clone", async {
-            let (tx, rx) = async_channel_unbounded();
-            let tx_clone = tx.clone();
-
-            // Both senders should work
-            tx.send(1).unwrap();
-            tx_clone.send(2).unwrap();
-
-            // Receive both messages
-            assert_eq!(1, rx.recv().await.unwrap());
-            assert_eq!(2, rx.recv().await.unwrap());
-
-            // Drop original sender
-            drop(tx);
-
-            // Clone should still work
-            tx_clone.send(3).unwrap();
-            assert_eq!(3, rx.recv().await.unwrap());
-
-            // Drop clone - now channel should close
-            drop(tx_clone);
-            assert_eq!(Err(ChannelError::Closed), rx.recv().await);
-        })
-    }
-
-    #[test]
-    pub fn test_sender_clone() {
-        crate::run_test("test_sender_clone", async {
-            let (tx, rx) = async_channel();
-            let tx_clone = tx.clone();
-
-            // Test that both senders work
-            let send_task1 = operations::spawn_task(async move {
-                tx.send(1).await.unwrap();
-            });
-
-            let send_task2 = operations::spawn_task(async move {
-                tx_clone.send(2).await.unwrap();
-            });
-
-            let recv_task = operations::spawn_task(async move {
-                let msg1 = rx.recv().await.unwrap();
-                let msg2 = rx.recv().await.unwrap();
-
-                // Messages could arrive in any order
-                let mut msgs = vec![msg1, msg2];
-                msgs.sort();
-                assert_eq!(msgs, vec![1, 2]);
-            });
-
-            send_task1.await.unwrap();
-            send_task2.await.unwrap();
-            recv_task.await.unwrap();
-        })
-    }
-
-    #[test]
-    pub fn test_sender_clone_drop_behavior() {
-        crate::run_test("test_sender_clone_drop_behavior", async {
-            let (tx, rx) = async_channel();
-            let tx_clone = tx.clone();
-
-            // Send message with first sender and receive it
+        // Test that both senders work
+        let send_task1 = operations::spawn_task(async move {
             tx.send(1).await.unwrap();
-            assert_eq!(1, rx.recv().await.unwrap());
+        });
 
-            // Drop original sender
-            drop(tx);
-
-            // Clone should still work
+        let send_task2 = operations::spawn_task(async move {
             tx_clone.send(2).await.unwrap();
-            assert_eq!(2, rx.recv().await.unwrap());
+        });
 
-            // Now drop clone - channel should close
-            drop(tx_clone);
+        let recv_task = operations::spawn_task(async move {
+            let msg1 = rx.recv().await.unwrap();
+            let msg2 = rx.recv().await.unwrap();
 
-            // Channel should now be closed
-            assert_eq!(Err(ChannelError::Closed), rx.recv().await);
-        })
+            // Messages could arrive in any order
+            let mut msgs = vec![msg1, msg2];
+            msgs.sort();
+            assert_eq!(msgs, vec![1, 2]);
+        });
+
+        send_task1.await.unwrap();
+        send_task2.await.unwrap();
+        recv_task.await.unwrap();
     }
 
-    #[test]
-    pub fn test_multiple_sender_unbounded_clones() {
-        crate::run_test("test_multiple_sender_unbounded_clones", async {
-            let (tx, rx) = async_channel_unbounded();
+    #[crate::test]
+    async fn test_sender_clone_drop_behavior() {
+        let (tx, rx) = async_channel();
+        let tx_clone = tx.clone();
 
-            // Create multiple clones
-            let tx1 = tx.clone();
-            let tx2 = tx.clone();
-            let tx3 = tx.clone();
+        // Send message with first sender and receive it
+        tx.send(1).await.unwrap();
+        assert_eq!(1, rx.recv().await.unwrap());
 
-            // All should be able to send
-            tx.send(1).unwrap();
-            tx1.send(2).unwrap();
-            tx2.send(3).unwrap();
-            tx3.send(4).unwrap();
+        // Drop original sender
+        drop(tx);
 
-            // Receive all messages
-            let mut received = Vec::new();
-            for _ in 0..4 {
-                received.push(rx.recv().await.unwrap());
-            }
-            received.sort();
-            assert_eq!(received, vec![1, 2, 3, 4]);
+        // Clone should still work
+        tx_clone.send(2).await.unwrap();
+        assert_eq!(2, rx.recv().await.unwrap());
 
-            // Drop all but one sender
-            drop(tx);
-            drop(tx1);
-            drop(tx2);
+        // Now drop clone - channel should close
+        drop(tx_clone);
 
-            // Last sender should still work
-            tx3.send(5).unwrap();
-            assert_eq!(5, rx.recv().await.unwrap());
-
-            // Drop last sender
-            drop(tx3);
-            assert_eq!(Err(ChannelError::Closed), rx.recv().await);
-        })
+        // Channel should now be closed
+        assert_eq!(Err(ChannelError::Closed), rx.recv().await);
     }
 
-    #[test]
-    pub fn test_channel_try_send_error_variants() {
-        crate::run_test("test_channel_try_send_error_variants", async {
-            let (tx, rx) = async_channel();
+    #[crate::test]
+    async fn test_multiple_sender_unbounded_clones() {
+        let (tx, rx) = async_channel_unbounded();
 
-            // First send should succeed
-            assert_eq!(Ok(()), tx.try_send(1));
+        // Create multiple clones
+        let tx1 = tx.clone();
+        let tx2 = tx.clone();
+        let tx3 = tx.clone();
 
-            // Second send should fail with ChannelFull
-            match tx.try_send(2) {
-                Err(SendError::ChannelFull(2)) => {}
-                other => panic!("Expected ChannelFull(2), got {other:?}"),
-            }
+        // All should be able to send
+        tx.send(1).unwrap();
+        tx1.send(2).unwrap();
+        tx2.send(3).unwrap();
+        tx3.send(4).unwrap();
 
-            // Receive the first message
-            assert_eq!(1, rx.recv().await.unwrap());
+        // Receive all messages
+        let mut received = Vec::new();
+        for _ in 0..4 {
+            received.push(rx.recv().await.unwrap());
+        }
+        received.sort();
+        assert_eq!(received, vec![1, 2, 3, 4]);
 
-            // Now second send should succeed
-            assert_eq!(Ok(()), tx.try_send(2));
+        // Drop all but one sender
+        drop(tx);
+        drop(tx1);
+        drop(tx2);
 
-            // Drop receiver
-            drop(rx);
+        // Last sender should still work
+        tx3.send(5).unwrap();
+        assert_eq!(5, rx.recv().await.unwrap());
 
-            // Now send should fail with ChannelClosed
-            match tx.try_send(3) {
-                Err(SendError::ChannelClosed(3)) => {}
-                other => panic!("Expected ChannelClosed(3), got {other:?}"),
-            }
-        })
+        // Drop last sender
+        drop(tx3);
+        assert_eq!(Err(ChannelError::Closed), rx.recv().await);
+    }
+
+    #[crate::test]
+    async fn test_channel_try_send_error_variants() {
+        let (tx, rx) = async_channel();
+
+        // First send should succeed
+        assert_eq!(Ok(()), tx.try_send(1));
+
+        // Second send should fail with ChannelFull
+        match tx.try_send(2) {
+            Err(SendError::ChannelFull(2)) => {}
+            other => panic!("Expected ChannelFull(2), got {other:?}"),
+        }
+
+        // Receive the first message
+        assert_eq!(1, rx.recv().await.unwrap());
+
+        // Now second send should succeed
+        assert_eq!(Ok(()), tx.try_send(2));
+
+        // Drop receiver
+        drop(rx);
+
+        // Now send should fail with ChannelClosed
+        match tx.try_send(3) {
+            Err(SendError::ChannelClosed(3)) => {}
+            other => panic!("Expected ChannelClosed(3), got {other:?}"),
+        }
     }
 }

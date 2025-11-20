@@ -111,12 +111,8 @@ mod tests {
 
     use super::*;
 
-    #[test]
-    fn test_sync_buffered_stream() {
-        crate::run_test("server_client", sync_buffered_stream())
-    }
-
-    async fn sync_buffered_stream() {
+    #[crate::test]
+    async fn test_sync_buffered_stream() {
         let data = b"Hello, world!";
         let data2 = b"Hello, world!2";
 

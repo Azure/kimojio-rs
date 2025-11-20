@@ -34,7 +34,7 @@ jobs:
       run: cargo clippy --all-targets --all-features -- -D warnings
     
   coverage:
-    if: github.repository == 'Azure/kimojio'
+    if: github.repository == 'Azure/kimojio-rs'
 
     runs-on: ubuntu-latest
 

@@ -186,129 +186,119 @@ mod test {
         handle
     }
 
-    #[test]
-    fn readers_block_writer_test() {
-        crate::run_test("test_readers_block_writer_test", async {
-            let lock = Rc::new(AsyncReaderWriterLock::new(0i32));
-            let reader = lock.lock_read().await.unwrap();
-            let t1 = spawn(&lock, async move |lock| {
-                let mut ptr = lock.lock_write().await.unwrap();
-                *ptr = 5;
-            })
-            .await;
-
-            assert_eq!(*reader, 0);
-
-            {
-                //nested reader
-                assert_eq!(*lock.lock_read().await.unwrap(), 0);
-            }
-            drop(reader);
-            t1.await.unwrap();
-
-            assert_eq!(*lock.lock_read().await.unwrap(), 5);
+    #[crate::test]
+    async fn readers_block_writer_test() {
+        let lock = Rc::new(AsyncReaderWriterLock::new(0i32));
+        let reader = lock.lock_read().await.unwrap();
+        let t1 = spawn(&lock, async move |lock| {
+            let mut ptr = lock.lock_write().await.unwrap();
+            *ptr = 5;
         })
+        .await;
+
+        assert_eq!(*reader, 0);
+
+        {
+            //nested reader
+            assert_eq!(*lock.lock_read().await.unwrap(), 0);
+        }
+        drop(reader);
+        t1.await.unwrap();
+
+        assert_eq!(*lock.lock_read().await.unwrap(), 5);
     }
 
-    #[test]
-    fn writer_blocks_readers_test() {
-        crate::run_test("test_writer_blocks_readers_test", async {
-            let lock = Rc::new(AsyncReaderWriterLock::new(0i32));
-            let counter = Rc::new(Cell::new(0i32));
-            let writer = lock.lock_write().await.unwrap();
-            let mut tasks = Vec::new();
-            for _ in 0..4 {
-                let counter = counter.clone();
-                tasks.push(
-                    spawn(&lock, async move |lock| {
-                        lock.lock_read().await.unwrap();
-                        counter.set(counter.get() + 1);
-                    })
-                    .await,
-                );
-            }
+    #[crate::test]
+    async fn writer_blocks_readers_test() {
+        let lock = Rc::new(AsyncReaderWriterLock::new(0i32));
+        let counter = Rc::new(Cell::new(0i32));
+        let writer = lock.lock_write().await.unwrap();
+        let mut tasks = Vec::new();
+        for _ in 0..4 {
+            let counter = counter.clone();
+            tasks.push(
+                spawn(&lock, async move |lock| {
+                    lock.lock_read().await.unwrap();
+                    counter.set(counter.get() + 1);
+                })
+                .await,
+            );
+        }
 
-            assert_eq!(counter.get(), 0);
-            drop(writer);
+        assert_eq!(counter.get(), 0);
+        drop(writer);
 
-            let expected_len = tasks.len() as i32;
+        let expected_len = tasks.len() as i32;
 
-            for task in tasks {
-                task.await.unwrap();
-            }
+        for task in tasks {
+            task.await.unwrap();
+        }
 
-            assert_eq!(counter.get(), expected_len);
-        })
+        assert_eq!(counter.get(), expected_len);
     }
 
-    #[test]
-    fn writer_blocks_writer_test() {
-        crate::run_test("writer_blocks_writer_test", async {
-            let lock: Rc<AsyncReaderWriterLock<i32>> = Default::default();
-            let mut writer = lock.lock_write().await.unwrap();
-            *writer = 4;
+    #[crate::test]
+    async fn writer_blocks_writer_test() {
+        let lock: Rc<AsyncReaderWriterLock<i32>> = Default::default();
+        let mut writer = lock.lock_write().await.unwrap();
+        *writer = 4;
 
-            let t1 = spawn(&lock, async move |lock| {
-                let mut ptr = lock.lock_write().await.unwrap();
-                *ptr = 5;
-            })
-            .await;
-
-            assert_eq!(*writer, 4);
-
-            drop(writer);
-            t1.await.unwrap();
-
-            assert_eq!(*lock.lock_read().await.unwrap(), 5);
+        let t1 = spawn(&lock, async move |lock| {
+            let mut ptr = lock.lock_write().await.unwrap();
+            *ptr = 5;
         })
+        .await;
+
+        assert_eq!(*writer, 4);
+
+        drop(writer);
+        t1.await.unwrap();
+
+        assert_eq!(*lock.lock_read().await.unwrap(), 5);
     }
 
-    #[test]
-    fn simple_upgrade() {
-        crate::run_test("simple_upgrade", async {
-            let lock = Rc::new(AsyncReaderWriterLock::new(0i32));
-            let read = lock.lock_read().await.unwrap();
-            let mut write = read.upgrade().await.unwrap();
-            *write = 5;
-            drop(write);
+    #[crate::test]
+    async fn simple_upgrade() {
+        let lock = Rc::new(AsyncReaderWriterLock::new(0i32));
+        let read = lock.lock_read().await.unwrap();
+        let mut write = read.upgrade().await.unwrap();
+        *write = 5;
+        drop(write);
 
-            assert_eq!(*lock.lock_read().await.unwrap(), 5);
-        })
+        assert_eq!(*lock.lock_read().await.unwrap(), 5);
     }
 
-    #[test]
-    fn many_readers_can_upgrade() {
-        crate::run_test("many_readers_can_upgrade", async {
-            let lock = Rc::new(AsyncReaderWriterLock::new(HashSet::new()));
-            let mut readies = Vec::new();
-            let proceed = Rc::new(AsyncEvent::new());
-            let mut indices = HashSet::new();
+    #[crate::test]
+    async fn many_readers_can_upgrade() {
+        let lock = Rc::new(AsyncReaderWriterLock::new(HashSet::new()));
+        let mut readies = Vec::new();
+        let proceed = Rc::new(AsyncEvent::new());
+        let mut indices = HashSet::new();
 
-            let mut tasks = Vec::new();
-            for index in 0..10 {
-                indices.insert(index);
-                let lock = lock.clone();
-                let ready = Rc::new(AsyncEvent::new());
-                readies.push(ready.clone());
-                let proceed = proceed.clone();
-                tasks.push(operations::spawn_task(async move {
-                    let reader = lock.lock_read().await.unwrap();
-                    ready.set();
-                    proceed.wait().await.unwrap();
-                    let mut writer = reader.upgrade().await.unwrap();
-                    writer.insert(index);
-                }));
-            }
+        let mut tasks = Vec::new();
+        for index in 0..10 {
+            indices.insert(index);
+            let lock = lock.clone();
+            let ready = Rc::new(AsyncEvent::new());
+            readies.push(ready.clone());
+            let proceed = proceed.clone();
+            tasks.push(operations::spawn_task(async move {
+                let reader = lock.lock_read().await.unwrap();
+                ready.set();
+                proceed.wait().await.unwrap();
+                let mut writer = reader.upgrade().await.unwrap();
+                writer.insert(index);
+            }));
+        }
 
-            for r in readies {
-                r.wait().await.unwrap();
-            }
-            proceed.set();
-            for task in tasks {
-                task.await.unwrap();
-            }
-            let results = lock.lock_read().await.unwrap();
-            assert_eq!(&*results, &indices);
-        })
+        for r in readies {
+            r.wait().await.unwrap();
+        }
+        proceed.set();
+        for task in tasks {
+            task.await.unwrap();
+        }
+        let results = lock.lock_read().await.unwrap();
+        assert_eq!(&*results, &indices);
     }
 }

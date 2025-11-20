@@ -176,7 +176,9 @@ async fn run_server(cert_file: String, key_file: String, ca_cert_file: String, p
     }
 }
 
-fn main() {
+/// Sets up kimojio runtime and starts the TLS echo server.
+#[kimojio::main]
+async fn main() -> Result<(), kimojio::Errno> {
     let args = Args::parse();
 
     // Verify files exist
@@ -195,6 +197,7 @@ fn main() {
     let key_file = args.key.to_string_lossy().to_string();
     let ca_cert_file = args.ca_cert.to_string_lossy().to_string();
 
-    // Run the server using kimojio's test runner (which sets up the io_uring runtime)
-    kimojio::run(0, run_server(cert_file, key_file, ca_cert_file, args.port));
+    // Run the server
+    run_server(cert_file, key_file, ca_cert_file, args.port).await;
+    Ok(())
 }

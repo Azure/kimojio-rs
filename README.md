@@ -41,21 +41,14 @@ use kimojio::{
     operations::{self, OFlags},
 };
 
-async fn kimojio_main() -> Result<(), Errno> {
+#[kimojio::main]
+async fn main() -> Result<(), Errno> {
     let flags = OFlags::CREATE | OFlags::RDWR;
     let fd = operations::open(c"/tmp/example.txt", flags, 0o644.into()).await?;
     let written = operations::write(&fd, b"hello world").await?;
     assert_eq!(written, 11);
     operations::close(fd).await?;
     Ok(())
-}
-
-pub fn main() {
-    let result = kimojio::run_with_configuration(0, kimojio_main(), Configuration::new());
-    result
-        .expect("shutdown_loop called")
-        .expect("run panicked")
-        .expect("run failed");
 }
 ```
 

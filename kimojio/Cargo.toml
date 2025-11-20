@@ -19,6 +19,7 @@ foreign-types-shared.workspace = true
 futures.workspace = true
 impls.workspace = true
 intrusive-collections.workspace = true
+kimojio-macros.workspace = true
 kimojio-tls.workspace = true
 libc.workspace = true
 openssl.workspace = true

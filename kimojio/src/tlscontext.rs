@@ -119,58 +119,52 @@ pub(crate) mod test {
         assert!(crate::tlsstream::tls_overhead(16384) > 0);
     }
 
-    #[test]
-    fn test_tls_timeout_on_write_with_pending_read() {
-        crate::run_test("test_tls_timeout_on_write_with_pending_read", async {
-            let cert_and_key_file_names = setup_default_certs().unwrap();
+    #[crate::test]
+    async fn test_tls_timeout_on_write_with_pending_read() {
+        let cert_and_key_file_names = setup_default_certs().unwrap();
 
-            let done = Rc::new(AsyncEvent::new());
-            let server_socket = create_server_socket(9001).await.unwrap();
-            let server_task = spawn_task(server_listener(
-                server_socket,
-                cert_and_key_file_names.clone(),
-                done.clone(),
-            ));
+        let done = Rc::new(AsyncEvent::new());
+        let server_socket = create_server_socket(9001).await.unwrap();
+        let server_task = spawn_task(server_listener(
+            server_socket,
+            cert_and_key_file_names.clone(),
+            done.clone(),
+        ));
 
-            let addr = ("localhost", 9001)
-                .to_socket_addrs()
-                .unwrap()
-                .next()
-                .unwrap();
-            let client_socket = create_client_socket(&addr).await.unwrap();
-            let client_ctx = test_utils::make_test_client_ctx(
-                cert_and_key_file_names.client_cert_name.as_c_str(),
-                cert_and_key_file_names.client_key_name.as_c_str(),
-                cert_and_key_file_names.ca_cert_name.as_c_str(),
-                None,
-            )
+        let addr = ("localhost", 9001)
+            .to_socket_addrs()
+            .unwrap()
+            .next()
             .unwrap();
-            let client = client_ctx.client(16384, client_socket, None).await.unwrap();
-            let (mut read, mut write) = client.split().await.unwrap();
+        let client_socket = create_client_socket(&addr).await.unwrap();
+        let client_ctx = test_utils::make_test_client_ctx(
+            cert_and_key_file_names.client_cert_name.as_c_str(),
+            cert_and_key_file_names.client_key_name.as_c_str(),
+            cert_and_key_file_names.ca_cert_name.as_c_str(),
+            None,
+        )
+        .unwrap();
+        let client = client_ctx.client(16384, client_socket, None).await.unwrap();
+        let (mut read, mut write) = client.split().await.unwrap();
 
-            let pending_read = operations::spawn_task(async move {
-                let mut read_buf = [0u8; 5];
-                read.read(&mut read_buf, None).await
-            });
+        let pending_read = operations::spawn_task(async move {
+            let mut read_buf = [0u8; 5];
+            read.read(&mut read_buf, None).await
+        });
 
-            // ensure previous task has a chance to run and block on read
-            operations::yield_io().await;
+        // ensure previous task has a chance to run and block on read
+        operations::yield_io().await;
 
-            let one_second_earlier = Instant::now() - Duration::from_secs(1);
-            let result = write.write(b"hello", Some(one_second_earlier)).await;
-            assert!(result.is_err(), "Expecting timeout error");
-            done.set();
-            pending_read.abort();
-            server_task.abort();
-        })
+        let one_second_earlier = Instant::now() - Duration::from_secs(1);
+        let result = write.write(b"hello", Some(one_second_earlier)).await;
+        assert!(result.is_err(), "Expecting timeout error");
+        done.set();
+        pending_read.abort();
+        server_task.abort();
     }
 
-    #[test]
-    fn test_echo_example() {
-        crate::run_test("test_echo_example", test());
-    }
-
-    async fn test() {
+    #[crate::test]
+    async fn test_echo_example() {
         let cert_and_key_file_names = setup_default_certs().unwrap();
 
         let done = Rc::new(AsyncEvent::new());
@@ -321,14 +315,7 @@ pub(crate) mod test {
         write.close().await.unwrap();
     }
 
-    #[test]
-    fn test_tls_version_restriction() {
-        crate::run_test(
-            "test_tls_version_restriction",
-            test_tls_version_restriction_async(),
-        )
-    }
-
+    #[crate::test]
     async fn test_tls_version_restriction_async() {
         let cert_and_key_file_names = setup_default_certs().unwrap();
 
@@ -364,25 +351,7 @@ pub(crate) mod test {
         );
     }
 
-    #[test]
-    fn client_server_test() {
-        crate::run_test("client_server_test", client_server_test_async())
-    }
-    #[test]
-    fn client_handshake_crl_test() {
-        crate::run_test(
-            "client_handshake_crl_test_async",
-            client_handshake_crl_test_async(),
-        )
-    }
-    #[test]
-    fn server_handshake_crl_test() {
-        crate::run_test(
-            "server_handshake_crl_test_async",
-            server_handshake_crl_test_async(),
-        )
-    }
-
+    #[crate::test]
     async fn client_handshake_crl_test_async() {
         use test_utils::{delete_client_crl_directory, setup_client_crl_directory};
 
@@ -466,6 +435,7 @@ pub(crate) mod test {
         );
     }
 
+    #[crate::test]
     async fn server_handshake_crl_test_async() {
         use test_utils::{delete_server_crl_directory, setup_server_crl_directory};
 
@@ -608,6 +578,7 @@ pub(crate) mod test {
         Ok(())
     }
 
+    #[crate::test]
     async fn client_server_test_async() {
         let cert_and_key_file_names = setup_default_certs().unwrap();
         let (client_fd, server_fd) = bipipe();
@@ -636,14 +607,7 @@ pub(crate) mod test {
         .unwrap();
     }
 
-    #[test]
-    fn test_incorrect_ca_cert_for_server_authentication() {
-        crate::run_test(
-            "use_incorrect_ca_cert_for_server_authentication",
-            use_incorrect_ca_cert_for_server_authentication(),
-        )
-    }
-
+    #[crate::test]
     async fn use_incorrect_ca_cert_for_server_authentication() {
         let cert_and_key_file_names = setup_default_certs().unwrap();
         let (client_fd, server_fd) = bipipe();
@@ -674,14 +638,7 @@ pub(crate) mod test {
         .expect_err("Expecting protocol error");
     }
 
-    #[test]
-    fn test_incorrect_ca_cert_for_client_authentication() {
-        crate::run_test(
-            "use_incorrect_ca_cert_for_client_authentication",
-            use_incorrect_ca_cert_for_client_authentication(),
-        )
-    }
-
+    #[crate::test]
     async fn use_incorrect_ca_cert_for_client_authentication() {
         let cert_and_key_file_names = setup_default_certs().unwrap();
         let (client_fd, server_fd) = bipipe();
@@ -712,14 +669,7 @@ pub(crate) mod test {
         .expect_err("Expecting broken pipe");
     }
 
-    #[test]
-    fn test_server_certificate_not_signed_by_ca() {
-        crate::run_test(
-            "use_server_certificate_not_signed_by_ca",
-            use_server_certificate_not_signed_by_ca(),
-        )
-    }
-
+    #[crate::test]
     async fn use_server_certificate_not_signed_by_ca() {
         let cert_and_key_file_names = setup_default_certs().unwrap();
         let (client_fd, server_fd) = bipipe();
@@ -764,14 +714,7 @@ pub(crate) mod test {
         }
     }
 
-    #[test]
-    fn test_client_certificate_not_signed_by_ca() {
-        crate::run_test(
-            "use_client_certificate_not_signed_by_ca",
-            use_client_certificate_not_signed_by_ca(),
-        )
-    }
-
+    #[crate::test]
     async fn use_client_certificate_not_signed_by_ca() {
         let cert_and_key_file_names = setup_default_certs().unwrap();
         let (client_fd, server_fd) = bipipe();
@@ -812,69 +755,67 @@ pub(crate) mod test {
         }
     }
 
-    #[test]
-    fn test_iterate_certificate_san() {
-        crate::run_test("test_iterate_certificate_san", async {
-            let (client_fd, server_fd) = bipipe();
-            let cert_and_key_file_names = create_certs(
-                "use_valid_admin_name_at_the_client",
-                // Use the server name at the server
-                &default_server_name(),
-                // Use the admin name at the client. That is, the client is an
-                // admin entity, say the gateway.
-                &default_admin_name(),
-            )
-            .expect("error creating cert and key files");
+    #[crate::test]
+    async fn test_iterate_certificate_san() {
+        let (client_fd, server_fd) = bipipe();
+        let cert_and_key_file_names = create_certs(
+            "use_valid_admin_name_at_the_client",
+            // Use the server name at the server
+            &default_server_name(),
+            // Use the admin name at the client. That is, the client is an
+            // admin entity, say the gateway.
+            &default_admin_name(),
+        )
+        .expect("error creating cert and key files");
 
-            spawn_task({
-                let ca_cert_name = cert_and_key_file_names.ca_cert_name.clone();
-                let cert_name = cert_and_key_file_names.server_cert_name.clone();
-                let key_name = cert_and_key_file_names.server_key_name.clone();
+        spawn_task({
+            let ca_cert_name = cert_and_key_file_names.ca_cert_name.clone();
+            let cert_name = cert_and_key_file_names.server_cert_name.clone();
+            let key_name = cert_and_key_file_names.server_key_name.clone();
 
-                async move {
-                    let bufsize = 16384;
-                    let tls_context = test_utils::make_test_server_ctx(
-                        cert_name.as_c_str(),
-                        key_name.as_c_str(),
-                        ca_cert_name.as_c_str(),
-                        None,
-                    )
-                    .unwrap();
-                    let mut stream = tls_context.server(bufsize, server_fd, None).await.unwrap();
+            async move {
+                let bufsize = 16384;
+                let tls_context = test_utils::make_test_server_ctx(
+                    cert_name.as_c_str(),
+                    key_name.as_c_str(),
+                    ca_cert_name.as_c_str(),
+                    None,
+                )
+                .unwrap();
+                let mut stream = tls_context.server(bufsize, server_fd, None).await.unwrap();
 
-                    // Use openssl crate
-                    {
-                        let ssl = stream.get_ssl();
-                        let certs = ssl.peer_certificate().unwrap();
-                        let sans: Vec<String> = certs
-                            .subject_alt_names()
-                            .unwrap()
-                            .into_iter()
-                            .filter_map(|name| name.dnsname().map(String::from))
-                            .collect();
-                        assert_eq!(&sans, &["admin.unit.tests".to_string()]);
-                    }
-
-                    let mut message = [0; 5];
-                    stream.read(&mut message, None).await.unwrap();
-                    assert_eq!(message, "hello".as_bytes());
-                    stream.write("goodbye".as_bytes(), None).await.unwrap();
-
-                    stream.shutdown().await.unwrap();
+                // Use openssl crate
+                {
+                    let ssl = stream.get_ssl();
+                    let certs = ssl.peer_certificate().unwrap();
+                    let sans: Vec<String> = certs
+                        .subject_alt_names()
+                        .unwrap()
+                        .into_iter()
+                        .filter_map(|name| name.dnsname().map(String::from))
+                        .collect();
+                    assert_eq!(&sans, &["admin.unit.tests".to_string()]);
                 }
-            });
 
-            client(
-                client_fd,
-                cert_and_key_file_names.client_cert_name,
-                cert_and_key_file_names.client_key_name,
-                cert_and_key_file_names.ca_cert_name,
-                None,
-                None,
-            )
-            .await
-            .unwrap();
-        })
+                let mut message = [0; 5];
+                stream.read(&mut message, None).await.unwrap();
+                assert_eq!(message, "hello".as_bytes());
+                stream.write("goodbye".as_bytes(), None).await.unwrap();
+
+                stream.shutdown().await.unwrap();
+            }
+        });
+
+        client(
+            client_fd,
+            cert_and_key_file_names.client_cert_name,
+            cert_and_key_file_names.client_key_name,
+            cert_and_key_file_names.ca_cert_name,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
     }
 
     pub(crate) mod test_utils {

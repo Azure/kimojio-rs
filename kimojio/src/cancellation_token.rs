@@ -79,47 +79,43 @@ mod tests {
 
     use super::*;
 
-    #[test]
-    fn test_cancellation_token() {
-        crate::run_test("test_cancellation_token", async {
-            // Test simple
-            let token = CancellationToken::new();
-            assert!(!token.is_cancelled());
-            token.cancel();
-            assert!(token.is_cancelled());
+    #[crate::test]
+    async fn test_cancellation_token() {
+        // Test simple
+        let token = CancellationToken::new();
+        assert!(!token.is_cancelled());
+        token.cancel();
+        assert!(token.is_cancelled());
 
-            // Test cancel from another task
-            let token = Rc::new(CancellationToken::new());
-            let task = {
-                let token = token.clone();
-                crate::operations::spawn_task(async move { token.cancel() })
-            };
+        // Test cancel from another task
+        let token = Rc::new(CancellationToken::new());
+        let task = {
+            let token = token.clone();
+            crate::operations::spawn_task(async move { token.cancel() })
+        };
 
-            assert!(!token.is_cancelled());
-            token.cancelled().await.unwrap();
-            assert!(token.is_cancelled());
-            task.await.unwrap();
-        })
+        assert!(!token.is_cancelled());
+        token.cancelled().await.unwrap();
+        assert!(token.is_cancelled());
+        task.await.unwrap();
     }
 
-    #[test]
-    fn test_cancel_select() {
-        crate::run_test("test_cancel_select", async {
-            let token = CancellationToken::new();
+    #[crate::test]
+    async fn test_cancel_select() {
+        let token = CancellationToken::new();
 
-            let result = select! {
-                _ = token.cancelled() => "cancelled",
-                default => "not cancelled",
-            };
-            assert_eq!("not cancelled", result);
+        let result = select! {
+            _ = token.cancelled() => "cancelled",
+            default => "not cancelled",
+        };
+        assert_eq!("not cancelled", result);
 
-            token.cancel();
+        token.cancel();
 
-            let result = select! {
-                _ = token.cancelled() => "cancelled",
-                default => "not cancelled",
-            };
-            assert_eq!("cancelled", result);
-        })
+        let result = select! {
+            _ = token.cancelled() => "cancelled",
+            default => "not cancelled",
+        };
+        assert_eq!("cancelled", result);
     }
 }

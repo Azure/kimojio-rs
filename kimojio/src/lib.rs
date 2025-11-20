@@ -1,6 +1,9 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+// Allow the crate to refer to itself as `::kimojio` for macro expansion
+extern crate self as kimojio;
+
 use std::rc::Rc;
 use std::task::Waker;
 
@@ -89,6 +92,8 @@ pub use tracing::{EventEnvelope, Events, TraceConfiguration};
 use uuid::Uuid;
 
 use crate::configuration::BusyPoll;
+
+pub use kimojio_macros::{main, test};
 
 const MAX_TASK_STACK_SIZE: usize = 65536;
 

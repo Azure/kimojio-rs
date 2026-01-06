@@ -45,7 +45,9 @@ pub mod task_pool;
 mod task_ref;
 mod task_state_cell;
 pub mod timer;
+#[cfg(feature = "tls")]
 pub mod tlscontext;
+#[cfg(feature = "tls")]
 pub mod tlsstream;
 mod tracing;
 mod uring_stats;
@@ -231,6 +233,7 @@ pub fn run_test_with_handle(
     }
 }
 
+#[cfg(feature = "tls")]
 pub fn tls_version() -> (u64, u64, u64) {
     kimojio_tls::version()
 }
@@ -351,6 +354,7 @@ impl TraceConfiguration for TestTraceConfiguration {
             } => println!(
                 "io_error: thread_id: {thread_index}, task_id: {task_index}, tag: {tag}, error: {error}, activity_id: {activity_id}"
             ),
+            #[cfg(feature = "tls")]
             tracing::Events::TlsError { activity_id, code } => println!(
                 "tls_error: thread_id: {thread_index}, task_id: {task_index}, code: {code}, activity_id: {activity_id}"
             ),

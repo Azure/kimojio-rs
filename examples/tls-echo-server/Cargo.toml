@@ -6,6 +6,6 @@ edition = "2024"
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
-kimojio.workspace = true
+kimojio = { workspace = true, features = ["tls"] }
 openssl.workspace = true
 rustix.workspace = true

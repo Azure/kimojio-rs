@@ -59,6 +59,7 @@ pub enum Events {
         tag: u32,
         error: i32,
     },
+    #[cfg(feature = "tls")]
     TlsError {
         activity_id: Uuid,
         code: u64,

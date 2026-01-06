@@ -20,9 +20,9 @@ futures.workspace = true
 impls.workspace = true
 intrusive-collections.workspace = true
 kimojio-macros.workspace = true
-kimojio-tls.workspace = true
+kimojio-tls = { workspace = true, optional = true }
 libc.workspace = true
-openssl.workspace = true
+openssl = { workspace = true, optional = true }
 pin-project-lite.workspace = true
 rustix.workspace = true
 rustix-uring.workspace = true
@@ -32,6 +32,9 @@ uuid.workspace = true
 zerocopy.workspace = true
 
 [features]
+default = ["tls"]
+# Enable TLS/OpenSSL support
+tls = ["dep:openssl", "dep:kimojio-tls"]
 # Enable IoUring feature which optimizes the uring hot path at the tradeoff of
 # requiring the same thread to call io_uring_enter() exclusively, the ring
 # cannot be shared across threads. Requires Linux 6.0 or later.
@@ -44,7 +47,7 @@ noencrypt = []
 enter_stats = []
 fault_injection = []
 # Temporary feature for ssl2
-ssl2 = []
+ssl2 = ["tls"]
 
 [dev-dependencies]
 criterion.workspace = true

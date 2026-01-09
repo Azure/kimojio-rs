@@ -268,7 +268,11 @@ pub(crate) fn submit_and_complete_io(
 
             // do not double count the submissions
             let submissions = submissions as u64;
-            let in_flight_io = in_flight_io - submissions;
+            let in_flight_io = if iopoll {
+                in_flight_io_poll
+            } else {
+                in_flight_io
+            } - submissions;
 
             Some(RingEventTraceInfo {
                 start_time,

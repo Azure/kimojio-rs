@@ -91,6 +91,7 @@ pub use rustix_uring::Errno;
 use rustix_uring::opcode::AsyncCancel;
 use task::Task;
 pub use tracing::{EventEnvelope, Events, TraceConfiguration};
+pub use uring_stats::URingStats;
 use uuid::Uuid;
 
 use crate::configuration::BusyPoll;

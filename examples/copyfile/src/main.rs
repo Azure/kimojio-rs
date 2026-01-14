@@ -68,6 +68,11 @@ struct Args {
     /// This implies O_DIRECT mode, which requires block-aligned I/O.
     #[arg(short = 'p', long)]
     polled: bool,
+
+    /// Print io_uring statistics after the copy completes.
+    /// Shows metrics like max in-flight I/O, task polls, etc.
+    #[arg(short = 's', long)]
+    stats: bool,
 }
 
 /// Represents a single I/O buffer that will be used for a read-then-write cycle.
@@ -459,6 +464,34 @@ async fn run_copy(args: Args) -> Result<()> {
     println!("  Bytes copied: {}", bytes_copied);
     println!("  Time elapsed: {:.3} seconds", elapsed_secs);
     println!("  Throughput: {:.2} MB/s", throughput);
+
+    // Print io_uring statistics if requested.
+    // These stats help understand the runtime's behavior and can be useful for
+    // performance tuning. For example, max_in_flight_io shows how well we're
+    // utilizing the configured in-flight limit.
+    if args.stats {
+        let task_state = kimojio::task::TaskState::get();
+        let stats = &task_state.stats;
+        println!("\nio_uring statistics:");
+        println!("  Max in-flight I/O: {}", stats.max_in_flight_io.get());
+        println!("  Current in-flight I/O: {}", stats.in_flight_io.get());
+        println!(
+            "  Max in-flight polled I/O: {}",
+            stats.max_in_flight_io_poll.get()
+        );
+        println!(
+            "  Current in-flight polled I/O: {}",
+            stats.in_flight_io_poll.get()
+        );
+        println!(
+            "  Tasks polled (I/O priority): {}",
+            stats.tasks_polled_io.get()
+        );
+        println!(
+            "  Tasks polled (CPU priority): {}",
+            stats.tasks_polled_cpu.get()
+        );
+    }
 
     Ok(())
 }

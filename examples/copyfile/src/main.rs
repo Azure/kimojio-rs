@@ -14,7 +14,7 @@
 //! whether to use polled I/O mode.
 
 use anyhow::{bail, Context, Result};
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 use kimojio::operations::{self, io_scope, io_scope_drain_futures, OFlags};
@@ -22,6 +22,38 @@ use rustix::fs::Mode;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::rc::Rc;
+
+/// Polled I/O mode selection.
+/// Polled I/O avoids interrupt overhead but requires O_DIRECT (aligned buffers).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum)]
+pub enum PolledMode {
+    /// No polled I/O - use standard interrupt-driven completion
+    #[default]
+    None,
+    /// Use polled I/O for reads only
+    Read,
+    /// Use polled I/O for writes only
+    Write,
+    /// Use polled I/O for both reads and writes
+    Both,
+}
+
+impl PolledMode {
+    /// Returns true if reads should use polled I/O
+    pub fn poll_reads(self) -> bool {
+        matches!(self, PolledMode::Read | PolledMode::Both)
+    }
+
+    /// Returns true if writes should use polled I/O
+    pub fn poll_writes(self) -> bool {
+        matches!(self, PolledMode::Write | PolledMode::Both)
+    }
+
+    /// Returns true if any polled I/O is enabled (requires O_DIRECT)
+    pub fn any_polled(self) -> bool {
+        self != PolledMode::None
+    }
+}
 
 /// Type alias for a boxed future that returns an IoBuffer or an error.
 /// This simplifies the type annotations for FuturesUnordered and improves readability.
@@ -65,9 +97,10 @@ struct Args {
     in_flight: usize,
 
     /// Use polled I/O mode for lower latency.
-    /// This implies O_DIRECT mode, which requires block-aligned I/O.
-    #[arg(short = 'p', long)]
-    polled: bool,
+    /// Options: none, read, write, both.
+    /// Polled I/O implies O_DIRECT mode, which requires block-aligned I/O.
+    #[arg(short = 'p', long, value_enum, default_value_t = PolledMode::None)]
+    polled: PolledMode,
 
     /// Print io_uring statistics after the copy completes.
     /// Shows metrics like max in-flight I/O, task polls, etc.
@@ -168,7 +201,7 @@ async fn copy_file(
     block_size: usize,
     max_blocks: Option<u64>,
     in_flight: usize,
-    polled: bool,
+    polled: PolledMode,
 ) -> Result<u64> {
     // io_scope allows to ensure that in a situation where we will drop in
     // flight futures, we can cancel them without blocking the event loop.
@@ -187,7 +220,7 @@ async fn copy_file(
         // Using a pool lets us reuse buffers efficiently.
         let mut buffer_pool: Vec<IoBuffer> = Vec::with_capacity(in_flight);
         for _ in 0..in_flight {
-            if polled {
+            if polled.any_polled() {
                 // For polled/O_DIRECT mode, we need aligned buffers
                 buffer_pool.push(create_aligned_buffer(block_size));
             } else {
@@ -246,6 +279,10 @@ async fn copy_file(
                 let src_fd_clone = src_fd.clone();
                 let dst_fd_clone = dst_fd.clone();
 
+                // Extract polled flags for use in the async block
+                let poll_reads = polled.poll_reads();
+                let poll_writes = polled.poll_writes();
+
                 // Create a future that performs both read and write for this block.
                 // This approach means:
                 // - The main loop doesn't block on either reads or writes
@@ -261,7 +298,7 @@ async fn copy_file(
                         src_fd_clone.as_ref(),
                         &mut buffer.data,
                         offset,
-                        polled,
+                        poll_reads,
                     )
                     .await?;
 
@@ -279,7 +316,7 @@ async fn copy_file(
                         dst_fd_clone.as_ref(),
                         &buffer.data[..bytes_read],
                         offset,
-                        polled,
+                        poll_writes,
                     )
                     .await?;
 
@@ -393,7 +430,7 @@ async fn run_copy(args: Args) -> Result<()> {
 
     // When using polled I/O (which implies O_DIRECT), block size must be aligned
     // to the filesystem's logical block size (typically 512 bytes).
-    if args.polled && !args.block_size.is_multiple_of(512) {
+    if args.polled.any_polled() && !args.block_size.is_multiple_of(512) {
         bail!(
             "block size must be a multiple of 512 bytes when using polled I/O (got {})",
             args.block_size
@@ -418,16 +455,22 @@ async fn run_copy(args: Args) -> Result<()> {
             .unwrap_or_else(|| "all".to_string())
     );
     println!("  Max in-flight I/O: {}", args.in_flight);
-    println!("  Polled I/O: {} (O_DIRECT: {})", args.polled, args.polled);
+    println!(
+        "  Polled I/O: {:?} (O_DIRECT: {})",
+        args.polled,
+        args.polled.any_polled()
+    );
 
-    // Open files with O_DIRECT if using polled I/O
+    // Open files with O_DIRECT if using any polled I/O
+    let use_direct_read = args.polled.poll_reads();
     let src_fd = Rc::new(
-        open_source_file(input_path, args.polled)
+        open_source_file(input_path, use_direct_read)
             .await
             .context("Failed to open source file")?,
     );
+    let use_direct_write = args.polled.poll_writes();
     let dst_fd = Rc::new(
-        open_dest_file(output_path, args.polled)
+        open_dest_file(output_path, use_direct_write)
             .await
             .context("Failed to open destination file")?,
     );

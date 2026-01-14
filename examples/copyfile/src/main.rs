@@ -330,12 +330,6 @@ async fn copy_file(
                 in_flight_ops.push(copy_future);
             }
 
-            // Now wait for at least one operation to complete (if any are in flight)
-            if in_flight_ops.is_empty() {
-                // No operations in flight and no more to issue - we're done!
-                break;
-            }
-
             // Wait for the next operation to complete.
             // FuturesUnordered returns results as they complete, not in submission order.
             // This is more efficient because we never wait for a slow operation when
@@ -369,7 +363,7 @@ async fn copy_file(
                     unreachable!("io_scope_drain_futures returned Ok after Err");
                 }
                 None => {
-                    // FuturesUnordered is empty (we checked above, so this shouldn't happen)
+                    // All done
                     break;
                 }
             }

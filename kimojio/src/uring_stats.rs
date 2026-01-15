@@ -9,6 +9,7 @@ use std::cell::Cell;
 #[derive(Clone, Default)]
 pub struct URingStats {
     pub in_flight_io_poll: Cell<u64>,
+    pub max_in_flight_io_poll: Cell<u64>,
     pub in_flight_io: Cell<u64>,
     pub max_in_flight_io: Cell<u64>,
     pub tasks_polled_io: Cell<u64>,
@@ -36,7 +37,10 @@ impl URingStats {
     #[inline(always)]
     pub fn increment_in_flight_io_poll(&self, amount: u64) {
         let value = self.in_flight_io_poll.get() + amount;
+        let max_value = self.max_in_flight_io_poll.get();
         self.in_flight_io_poll.set(value);
+        self.max_in_flight_io_poll
+            .set(std::cmp::max(value, max_value));
     }
 
     #[inline(always)]

@@ -1,0 +1,12 @@
+[package]
+name = "copyfile"
+version = "0.1.0"
+edition = "2021"
+description = "A dd-like file copy utility demonstrating kimojio's async I/O with polled operations"
+
+[dependencies]
+kimojio = { path = "../../kimojio" }
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+rustix = { version = "1", features = ["fs"] }
+futures = "0.3"

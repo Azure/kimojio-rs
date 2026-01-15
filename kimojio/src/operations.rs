@@ -644,16 +644,27 @@ pub fn read_with_timeout<'a>(
     )
 }
 
-pub fn pread<'a>(fd: &impl AsFd, buf: &'a mut [u8], offset: u64) -> UsizeFuture<'a> {
+pub fn pread_polled<'a>(
+    fd: impl AsFd,
+    buf: &'a mut [u8],
+    offset: u64,
+    polled: bool,
+) -> UsizeFuture<'a> {
     let fd = fd.as_fd().as_raw_fd();
-    UsizeFuture::new(
+    UsizeFuture::with_polled(
         opcode::Read::new(Fd(fd), buf.as_mut_ptr(), buf.len() as u32)
             .offset(offset)
             .build(),
         fd,
         None,
         IOType::Read,
+        polled,
+        CompletionResources::None,
     )
+}
+
+pub fn pread<'a>(fd: &impl AsFd, buf: &'a mut [u8], offset: u64) -> UsizeFuture<'a> {
+    pread_polled(fd, buf, offset, false)
 }
 
 pub fn close(fd: OwnedFd) -> UnitFuture<'static> {

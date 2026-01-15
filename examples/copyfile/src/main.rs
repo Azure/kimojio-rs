@@ -110,36 +110,25 @@ struct Args {
 
 /// Represents a single I/O buffer that will be used for a read-then-write cycle.
 /// We track the block index to know where to write the data after reading.
+/// Buffers are always aligned to 512 bytes to support O_DIRECT mode.
 struct IoBuffer {
     /// The actual buffer holding the data.
-    /// We use a Box<[u8]> instead of Vec<u8> because:
-    /// 1. The size is fixed after allocation
-    /// 2. For O_DIRECT, we need aligned memory (which Box provides via global allocator)
+    /// Always allocated with 512-byte alignment to support O_DIRECT.
     data: Box<[u8]>,
     /// The block index this buffer is processing (used to calculate file offset)
     block_index: u64,
 }
 
-impl IoBuffer {
-    fn new(block_size: usize) -> Self {
-        // Allocate a zeroed buffer of the specified size.
-        // For O_DIRECT mode, the buffer address should be aligned.
-        // The global allocator typically provides sufficient alignment for this.
-        Self {
-            data: vec![0u8; block_size].into_boxed_slice(),
-            block_index: 0,
-        }
-    }
-}
-
-/// Allocates aligned memory for O_DIRECT I/O operations.
+/// Allocates aligned memory for I/O operations.
+///
+/// We always allocate aligned memory (512-byte alignment) so that
+/// buffers work with O_DIRECT mode. This simplifies the code by
+/// avoiding conditional allocation paths.
 ///
 /// O_DIRECT requires that:
 /// 1. The buffer address is aligned (typically to 512 bytes or the filesystem block size)
 /// 2. The I/O size is a multiple of the alignment
 /// 3. The file offset is a multiple of the alignment
-///
-/// This function allocates memory with proper alignment for O_DIRECT operations.
 fn allocate_aligned_buffer(size: usize, alignment: usize) -> Box<[u8]> {
     // Use the Layout API to allocate memory with specific alignment
     let layout = std::alloc::Layout::from_size_align(size, alignment)
@@ -157,9 +146,12 @@ fn allocate_aligned_buffer(size: usize, alignment: usize) -> Box<[u8]> {
     }
 }
 
-/// Creates an aligned IoBuffer for O_DIRECT operations.
-fn create_aligned_buffer(block_size: usize) -> IoBuffer {
-    // 512-byte alignment is the minimum for O_DIRECT on most filesystems
+/// Creates an IoBuffer with aligned memory.
+/// Always uses 512-byte alignment to support O_DIRECT mode.
+fn create_buffer(block_size: usize) -> IoBuffer {
+    // 512-byte alignment is the minimum for O_DIRECT on most filesystems.
+    // We always use aligned buffers to simplify the code and ensure
+    // compatibility with O_DIRECT regardless of the polled mode setting.
     const DIRECT_IO_ALIGNMENT: usize = 512;
     IoBuffer {
         data: allocate_aligned_buffer(block_size, DIRECT_IO_ALIGNMENT),
@@ -218,14 +210,10 @@ async fn copy_file(
         // Pool of available buffers for I/O operations.
         // We pre-allocate these to avoid allocation during the copy loop.
         // Using a pool lets us reuse buffers efficiently.
+        // Buffers are always aligned to support O_DIRECT mode.
         let mut buffer_pool: Vec<IoBuffer> = Vec::with_capacity(in_flight);
         for _ in 0..in_flight {
-            if polled.any_polled() {
-                // For polled/O_DIRECT mode, we need aligned buffers
-                buffer_pool.push(create_aligned_buffer(block_size));
-            } else {
-                buffer_pool.push(IoBuffer::new(block_size));
-            }
+            buffer_pool.push(create_buffer(block_size));
         }
 
         // FuturesUnordered is a collection of futures that can complete in any order.

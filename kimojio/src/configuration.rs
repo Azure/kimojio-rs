@@ -22,8 +22,7 @@ pub struct Configuration {
     pub(crate) busy_poll: BusyPoll,
 }
 
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
-#[derive(Default)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Default)]
 pub enum BusyPoll {
     /// never busy poll, always suspend thread until I/O completes if no tasks are ready
     #[default]
@@ -35,7 +34,6 @@ pub enum BusyPoll {
     /// busy poll the thread for Duration, then suspend until an I/O completes
     Until(Duration),
 }
-
 
 impl From<Option<Duration>> for BusyPoll {
     fn from(value: Option<Duration>) -> Self {

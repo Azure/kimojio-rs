@@ -60,8 +60,7 @@ jobs:
         toolchain: ${{ env.DEFAULT_RUST_VERSION }}
         components: llvm-tools
 
-    - name: Install cargo-llvm-cov
-      run: cargo install cargo-llvm-cov
+    - uses: taiki-e/install-action@cargo-llvm-cov
 
     # for now we can see the results in the UI, don't need to save the html
 

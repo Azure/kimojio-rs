@@ -142,7 +142,7 @@ fn allocate_aligned_buffer(size: usize, alignment: usize) -> Box<[u8]> {
             std::alloc::handle_alloc_error(layout);
         }
         // Create a slice from the raw pointer and wrap it in a Box
-        Box::from_raw(std::slice::from_raw_parts_mut(ptr, size))
+        Box::from_raw(std::ptr::slice_from_raw_parts_mut(ptr, size))
     }
 }
 

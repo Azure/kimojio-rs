@@ -567,6 +567,17 @@ pub fn sendmsg<'a>(
     )
 }
 
+/// Writes data from a buffer to a file descriptor at a specific offset.
+///
+/// This performs a positioned write (pwrite), writing the contents of `buf` to
+/// the file descriptor `fd` starting at the given byte `offset`. Unlike regular
+/// writes, pwrite does not modify the file's current position.
+///
+/// if `polled` is true, uses io_uring's polled mode for potentially lower
+/// latency on devices that support polling (e.g., NVMe drives with polling
+/// enabled). Polled mode spins on completion rather than using interrupts.
+///
+/// Returns the number of bytes written, or an error.
 pub fn pwrite_polled<'a>(
     fd: impl AsFd,
     buf: &'a [u8],
@@ -586,6 +597,15 @@ pub fn pwrite_polled<'a>(
     )
 }
 
+/// Writes data from a buffer to a file descriptor at a specific offset.
+///
+/// This performs a positioned write (pwrite), writing the contents of `buf` to
+/// the file descriptor `fd` starting at the given byte `offset`. Unlike regular
+/// writes, pwrite does not modify the file's current position.
+///
+/// Does not use polled I/O mode.
+///
+/// Returns the number of bytes written, or an error.
 pub fn pwrite<'a>(fd: &impl AsFd, buf: &'a [u8], offset: u64) -> UsizeFuture<'a> {
     pwrite_polled(fd, buf, offset, false)
 }
@@ -644,6 +664,17 @@ pub fn read_with_timeout<'a>(
     )
 }
 
+/// Reads data from a file descriptor at a specific offset into a buffer.
+///
+/// This performs a positioned read (pread), reading from the file descriptor `fd`
+/// starting at the given byte `offset` into `buf`. Unlike regular reads, pread does
+/// not modify the file's current position.
+///
+/// If `polled` is true, uses io_uring's polled mode for potentially lower latency
+/// on devices that support polling (e.g., NVMe drives with polling enabled).
+/// Polled mode spins on completion rather than using interrupts.
+///
+/// Returns the number of bytes read, or an error.
 pub fn pread_polled<'a>(
     fd: impl AsFd,
     buf: &'a mut [u8],
@@ -663,6 +694,13 @@ pub fn pread_polled<'a>(
     )
 }
 
+/// Reads data from a file descriptor at a specific offset into a buffer.
+///
+/// This performs a positioned read (pread), reading from the file descriptor `fd`
+/// starting at the given byte `offset` into `buf`. Unlike regular reads, pread does
+/// not modify the file's current position.
+///
+/// Returns a the number of bytes read, or an error.
 pub fn pread<'a>(fd: &impl AsFd, buf: &'a mut [u8], offset: u64) -> UsizeFuture<'a> {
     pread_polled(fd, buf, offset, false)
 }

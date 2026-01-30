@@ -6,17 +6,27 @@
 
 use std::cell::Cell;
 
+/// Per-thread statistics for the io_uring runtime.
+///
+/// Tracks metrics like in-flight I/O operations and task polling counts.
 #[derive(Clone, Default)]
 pub struct URingStats {
+    /// Current number of in-flight polled I/O operations.
     pub in_flight_io_poll: Cell<u64>,
+    /// Maximum observed in-flight polled I/O operations.
     pub max_in_flight_io_poll: Cell<u64>,
+    /// Current number of in-flight regular I/O operations.
     pub in_flight_io: Cell<u64>,
+    /// Maximum observed in-flight regular I/O operations.
     pub max_in_flight_io: Cell<u64>,
+    /// Total number of I/O-priority task polls.
     pub tasks_polled_io: Cell<u64>,
+    /// Total number of CPU-priority task polls.
     pub tasks_polled_cpu: Cell<u64>,
 }
 
 impl URingStats {
+    /// Creates a new `URingStats` with all counters at zero.
     pub fn new() -> Self {
         Self::default()
     }

@@ -8,12 +8,22 @@ use std::{future::Future, io::IoSlice, time::Instant};
 
 use crate::{Errno, OwnedFd, operations, try_clone_owned_fd};
 
+/// A trait for asynchronous reading from a stream.
+///
+/// Implementors provide methods to read data asynchronously with optional deadlines.
 pub trait AsyncStreamRead {
+    /// Attempts to read data into the buffer, returning the number of bytes read.
+    ///
+    /// May return fewer bytes than requested. Returns 0 at end of stream.
     fn try_read<'a>(
         &'a mut self,
         buffer: &'a mut [u8],
         deadline: Option<Instant>,
     ) -> impl Future<Output = Result<usize, Errno>> + 'a;
+
+    /// Reads exactly enough bytes to fill the buffer.
+    ///
+    /// Repeatedly reads until the buffer is full or an error occurs.
     fn read<'a>(
         &'a mut self,
         buffer: &'a mut [u8],
@@ -21,15 +31,24 @@ pub trait AsyncStreamRead {
     ) -> impl Future<Output = Result<(), Errno>> + 'a;
 }
 
+/// A trait for asynchronous writing to a stream.
+///
+/// Implementors provide methods to write data asynchronously with optional deadlines.
 pub trait AsyncStreamWrite {
+    /// Writes all bytes from the buffer to the stream.
     fn write<'a>(
         &'a mut self,
         buffer: &'a [u8],
         deadline: Option<Instant>,
     ) -> impl Future<Output = Result<(), Errno>> + 'a;
+
+    /// Shuts down the write side of the stream.
     fn shutdown(&mut self) -> impl Future<Output = Result<(), Errno>>;
+
+    /// Closes the stream entirely.
     fn close(&mut self) -> impl Future<Output = Result<(), Errno>>;
 
+    /// Writes all data from multiple buffers to the stream.
     fn writev<'a>(
         &'a mut self,
         buffers: &'a mut [IoSlice<'a>],
@@ -44,10 +63,14 @@ pub trait AsyncStreamWrite {
     }
 }
 
+/// A trait for streams that can be split into separate read and write halves.
 pub trait SplittableStream {
+    /// The type of the read half after splitting.
     type ReadStream: AsyncStreamRead;
+    /// The type of the write half after splitting.
     type WriteStream: AsyncStreamWrite;
 
+    /// Splits the stream into independent read and write halves.
     async fn split(self) -> Result<(Self::ReadStream, Self::WriteStream), Errno>;
 }
 
@@ -57,6 +80,7 @@ struct OwnedFdReadState {
     read_buffer: [u8; 16384],
 }
 
+/// The read half of an `OwnedFdStream` after splitting.
 pub struct OwnedFdStreamRead {
     fd: Option<OwnedFd>,
     read_state: OwnedFdReadState,
@@ -72,10 +96,14 @@ impl OwnedFdStreamRead {
     }
 }
 
+/// The write half of an `OwnedFdStream` after splitting.
 pub struct OwnedFdStreamWrite {
     fd: Option<OwnedFd>,
 }
 
+/// A stream wrapper around an owned file descriptor.
+///
+/// Provides buffered reading and direct writing with async support.
 pub struct OwnedFdStream {
     fd: Option<OwnedFd>,
     read_state: OwnedFdReadState,

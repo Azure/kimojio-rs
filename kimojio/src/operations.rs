@@ -77,6 +77,12 @@ impl<T, R: Future<Output = Result<T, Errno>> + FusedFuture> OperationFuture<T> f
 
 // TODO: splice, tee, poll, cancel, epoll
 
+/// Opens a file at the given path.
+///
+/// Opens or creates the file specified by `filename` with the given `flags` and `mode`.
+/// This is equivalent to the `openat(2)` system call with `AT_FDCWD` as the directory fd.
+///
+/// Returns a future that resolves to the opened file descriptor, or an error.
 pub fn open(filename: &CStr, flags: OFlags, mode: Mode) -> OwnedFdFuture<'_> {
     let dirfd = Fd(libc::AT_FDCWD);
     OwnedFdFuture::new(
@@ -90,6 +96,12 @@ pub fn open(filename: &CStr, flags: OFlags, mode: Mode) -> OwnedFdFuture<'_> {
     )
 }
 
+/// Creates a hard link to an existing file.
+///
+/// Creates a new hard link `newpath` that refers to the same file as `oldpath`.
+/// This is equivalent to the `linkat(2)` system call.
+///
+/// Returns a future that resolves to `()` on success, or an error.
 pub fn link<'a>(oldpath: &'a CStr, newpath: &'a CStr) -> UnitFuture<'a> {
     let dirfd = Fd(libc::AT_FDCWD);
     UnitFuture::new(
@@ -100,6 +112,12 @@ pub fn link<'a>(oldpath: &'a CStr, newpath: &'a CStr) -> UnitFuture<'a> {
     )
 }
 
+/// Creates a symbolic link.
+///
+/// Creates a symbolic link at `linkpath` that points to `target`.
+/// This is equivalent to the `symlinkat(2)` system call.
+///
+/// Returns a future that resolves to `()` on success, or an error.
 pub fn symlink<'a>(target: &'a CStr, linkpath: &'a CStr) -> UnitFuture<'a> {
     let dirfd = Fd(libc::AT_FDCWD);
     UnitFuture::new(
@@ -110,6 +128,12 @@ pub fn symlink<'a>(target: &'a CStr, linkpath: &'a CStr) -> UnitFuture<'a> {
     )
 }
 
+/// Creates a new directory.
+///
+/// Creates a new directory at `pathname` with the specified permissions.
+/// This is equivalent to the `mkdirat(2)` system call.
+///
+/// Returns a future that resolves to `()` on success, or an error.
 pub fn mkdir(pathname: &CStr, mode: Mode) -> UnitFuture<'_> {
     let dirfd = Fd(libc::AT_FDCWD);
     UnitFuture::new(
@@ -122,6 +146,12 @@ pub fn mkdir(pathname: &CStr, mode: Mode) -> UnitFuture<'_> {
     )
 }
 
+/// Removes an empty directory.
+///
+/// Removes the directory at `pathname`. The directory must be empty.
+/// This is equivalent to `unlinkat(2)` with the `AT_REMOVEDIR` flag.
+///
+/// Returns a future that resolves to `()` on success, or an error.
 pub fn rmdir(pathname: &CStr) -> UnitFuture<'_> {
     let dirfd = Fd(libc::AT_FDCWD);
     UnitFuture::new(
@@ -134,6 +164,12 @@ pub fn rmdir(pathname: &CStr) -> UnitFuture<'_> {
     )
 }
 
+/// Retrieves file status information for a path.
+///
+/// Returns metadata about the file at `filename`, including size, permissions,
+/// timestamps, and other attributes. This is equivalent to the `statx(2)` system call.
+///
+/// Returns a `Statx` structure containing the file's metadata, or an error.
 pub async fn stat(filename: &CStr) -> Result<Statx, Errno> {
     let mut statx = std::mem::MaybeUninit::<Statx>::uninit();
     stat_internal(filename, statx.as_mut_ptr()).await?;
@@ -150,6 +186,13 @@ fn stat_internal<'a>(filename: &'a CStr, statx: *mut Statx) -> UnitFuture<'a> {
     )
 }
 
+/// Retrieves file status information for an open file descriptor.
+///
+/// Returns metadata about the file referred to by `fd`, including size, permissions,
+/// timestamps, and other attributes. This is equivalent to the `statx(2)` system call
+/// with `AT_EMPTY_PATH`.
+///
+/// Returns a `Statx` structure containing the file's metadata, or an error.
 pub async fn fstat(fd: &impl AsFd) -> Result<Statx, Errno> {
     let mut statx = std::mem::MaybeUninit::<Statx>::uninit();
     fstat_internal(fd, statx.as_mut_ptr()).await?;
@@ -167,6 +210,12 @@ fn fstat_internal<'a>(fd: &impl AsFd, statx: *mut Statx) -> UnitFuture<'a> {
     UnitFuture::new(statx_op, -1, None, IOType::Stat)
 }
 
+/// Removes a file.
+///
+/// Deletes the file at `filename`. This is equivalent to the `unlinkat(2)` system call.
+/// If the file has other hard links, the file data remains until all links are removed.
+///
+/// Returns a future that resolves to `()` on success, or an error.
 pub fn unlink(filename: &CStr) -> UnitFuture<'_> {
     let dirfd = Fd(libc::AT_FDCWD);
     UnitFuture::new(
@@ -177,6 +226,12 @@ pub fn unlink(filename: &CStr) -> UnitFuture<'_> {
     )
 }
 
+/// Renames a file or directory.
+///
+/// Moves or renames `oldpath` to `newpath`. If `newpath` already exists, it will be
+/// atomically replaced. This is equivalent to the `renameat(2)` system call.
+///
+/// Returns a future that resolves to `()` on success, or an error.
 pub fn rename<'a>(oldpath: &'a CStr, newpath: &'a CStr) -> UnitFuture<'a> {
     let dirfd = Fd(libc::AT_FDCWD);
     UnitFuture::new(
@@ -187,6 +242,12 @@ pub fn rename<'a>(oldpath: &'a CStr, newpath: &'a CStr) -> UnitFuture<'a> {
     )
 }
 
+/// Provides advice to the kernel about file access patterns.
+///
+/// Announces an intention to access file data in a specific pattern, allowing the kernel
+/// to optimize accordingly. This is equivalent to the `fadvise64(2)` system call.
+///
+/// Returns a future that resolves to `()` on success, or an error.
 pub fn fadvise(fd: &impl AsFd, offset: u64, len: u64, advice: Advice) -> UnitFuture<'_> {
     let fd = fd.as_fd().as_raw_fd();
     UnitFuture::new(
@@ -199,6 +260,12 @@ pub fn fadvise(fd: &impl AsFd, offset: u64, len: u64, advice: Advice) -> UnitFut
     )
 }
 
+/// Provides advice to the kernel about memory access patterns.
+///
+/// Announces an intention to access memory in a specific pattern, allowing the kernel
+/// to optimize accordingly. This is equivalent to the `madvise(2)` system call.
+///
+/// Returns a future that resolves to `()` on success, or an error.
 pub fn madvise(addr: *const libc::c_void, len: u64, advice: Advice) -> UnitFuture<'static> {
     UnitFuture::new(
         opcode::Madvise::new(addr, len as u32, advice).build(),
@@ -208,6 +275,13 @@ pub fn madvise(addr: *const libc::c_void, len: u64, advice: Advice) -> UnitFutur
     )
 }
 
+/// Pre-allocates or deallocates space for a file.
+///
+/// Manipulates the allocated disk space for the file. This can be used to pre-allocate
+/// space to avoid fragmentation, or to deallocate space (punch holes). This is equivalent
+/// to the `fallocate(2)` system call.
+///
+/// Returns a future that resolves to `()` on success, or an error.
 pub fn fallocate(fd: &impl AsFd, mode: i32, offset: u64, len: u64) -> UnitFuture<'_> {
     let fd = fd.as_fd().as_raw_fd();
     UnitFuture::new(
@@ -221,6 +295,12 @@ pub fn fallocate(fd: &impl AsFd, mode: i32, offset: u64, len: u64) -> UnitFuture
     )
 }
 
+/// Creates a new socket.
+///
+/// Creates a socket with the specified domain, type, and protocol. If the kernel supports
+/// `io_uring` socket creation, it will be used; otherwise, falls back to synchronous creation.
+///
+/// Returns the created socket file descriptor, or an error.
 pub async fn socket(
     domain: AddressFamily,
     socket_type: SocketType,
@@ -250,6 +330,13 @@ pub async fn socket(
     }
 }
 
+/// Accepts an incoming connection on a listening socket.
+///
+/// Extracts the first pending connection from the queue of pending connections
+/// for the listening socket and returns a new file descriptor for the accepted socket.
+/// This is equivalent to the `accept(2)` system call.
+///
+/// Returns a future that resolves to the new connected socket file descriptor, or an error.
 pub fn accept(fd: &impl AsFd) -> OwnedFdFuture<'_> {
     let fd = fd.as_fd().as_raw_fd();
     OwnedFdFuture::new(
@@ -260,6 +347,12 @@ pub fn accept(fd: &impl AsFd) -> OwnedFdFuture<'_> {
     )
 }
 
+/// Shuts down part or all of a full-duplex connection.
+///
+/// Causes all or part of a full-duplex connection on the socket to be shut down.
+/// This is equivalent to the `shutdown(2)` system call.
+///
+/// Returns a future that resolves to `()` on success, or an error.
 pub fn shutdown(fd: &impl AsFd, how: i32) -> UnitFuture<'_> {
     let fd = fd.as_fd().as_raw_fd();
     UnitFuture::new(
@@ -270,11 +363,24 @@ pub fn shutdown(fd: &impl AsFd, how: i32) -> UnitFuture<'_> {
     )
 }
 
+/// Synchronizes a file's in-core state with storage.
+///
+/// Transfers all modified data and metadata of the file to the underlying storage device.
+/// This ensures data durability. This is equivalent to the `fsync(2)` system call.
+///
+/// Returns a future that resolves to `()` on success, or an error.
 pub fn fsync(fd: &impl AsFd) -> UnitFuture<'_> {
     let fd = fd.as_fd().as_raw_fd();
     UnitFuture::new(opcode::Fsync::new(Fd(fd)).build(), fd, None, IOType::Fsync)
 }
 
+/// Synchronizes a range of a file's data with storage.
+///
+/// Synchronizes a specific range of the file to the underlying storage device.
+/// This is more efficient than `fsync` when only part of the file needs to be synchronized.
+/// This is equivalent to the `sync_file_range(2)` system call.
+///
+/// Returns a future that resolves to `()` on success, or an error.
 pub fn sync_file_range(fd: &impl AsFd, offset: u64, len: u32) -> UnitFuture<'_> {
     let fd = fd.as_fd().as_raw_fd();
     UnitFuture::new(
@@ -287,10 +393,22 @@ pub fn sync_file_range(fd: &impl AsFd, offset: u64, len: u32) -> UnitFuture<'_> 
     )
 }
 
+/// Binds a socket to a local address.
+///
+/// Assigns the address specified by `address` to the socket. This is a synchronous
+/// operation using `rustix::net::bind`.
+///
+/// Returns `Ok(())` on success, or an error.
 pub fn bind(fd: &impl AsFd, address: &SocketAddr) -> Result<(), Errno> {
     rustix::net::bind(fd, address)
 }
 
+/// Marks a socket as a passive socket for accepting connections.
+///
+/// Marks the socket as a passive socket that will be used to accept incoming
+/// connections using `accept()`. This is a synchronous operation using `rustix::net::listen`.
+///
+/// Returns `Ok(())` on success, or an error.
 pub fn listen(fd: &impl AsFd, backlog: i32) -> Result<(), Errno> {
     rustix::net::listen(fd, backlog)
 }
@@ -363,6 +481,12 @@ fn sockaddr_from_socketaddr_unix(addr: &SocketAddrUnix) -> (sockaddr_un, usize) 
     )
 }
 
+/// Connects a Unix domain socket to a peer.
+///
+/// Initiates a connection on the Unix domain socket to the address specified by `addr`.
+/// This is used for connecting to Unix domain sockets (both path-based and abstract).
+///
+/// Returns `Ok(())` on successful connection, or an error.
 pub async fn connect_unix(fd: &impl AsFd, addr: &SocketAddrUnix) -> Result<(), Errno> {
     let fd = fd.as_fd().as_raw_fd();
     let (addr, addrlen) = sockaddr_from_socketaddr_unix(addr);
@@ -376,6 +500,12 @@ pub async fn connect_unix(fd: &impl AsFd, addr: &SocketAddrUnix) -> Result<(), E
     .await
 }
 
+/// Connects a socket to a peer address.
+///
+/// Initiates a connection on the socket to the address specified by `addr`.
+/// Supports both IPv4 and IPv6 addresses.
+///
+/// Returns `Ok(())` on successful connection, or an error.
 pub async fn connect(fd: &impl AsFd, addr: &SocketAddr) -> Result<(), Errno> {
     let fd = fd.as_fd().as_raw_fd();
     match addr {
@@ -406,6 +536,13 @@ pub async fn connect(fd: &impl AsFd, addr: &SocketAddr) -> Result<(), Errno> {
     }
 }
 
+/// Writes data from multiple buffers to a file descriptor.
+///
+/// Performs a scatter-gather write, writing the contents of multiple buffers
+/// to the file descriptor in a single operation. This is equivalent to the
+/// `writev(2)` or `pwritev(2)` system call.
+///
+/// Returns a future that resolves to the number of bytes written, or an error.
 pub fn writev<'a>(
     fd: &impl AsFd,
     iovec: &'a [IoSlice<'_>],
@@ -414,6 +551,12 @@ pub fn writev<'a>(
     writev_with_deadline(fd, iovec, offset, None)
 }
 
+/// Writes data from multiple buffers with a deadline.
+///
+/// Like [`writev`], but with an optional deadline. If the operation does not complete
+/// before the deadline, it will fail with `Errno::TIMEDOUT`.
+///
+/// Returns a future that resolves to the number of bytes written, or an error.
 pub fn writev_with_deadline<'a>(
     fd: &impl AsFd,
     iovec: &'a [IoSlice<'_>],
@@ -437,6 +580,12 @@ pub fn writev_with_deadline<'a>(
     }
 }
 
+/// Writes data from multiple buffers with a timeout.
+///
+/// Like [`writev`], but with an optional timeout duration. If the operation does not
+/// complete within the timeout, it will fail with `Errno::TIME`.
+///
+/// Returns a future that resolves to the number of bytes written, or an error.
 pub fn writev_with_timeout<'a>(
     fd: &impl AsFd,
     buffers: &'a [IoSlice<'_>],
@@ -456,10 +605,22 @@ pub fn writev_with_timeout<'a>(
     )
 }
 
+/// Writes data from a buffer to a file descriptor.
+///
+/// Writes the contents of `buf` to the file descriptor at the current position.
+/// The file position is advanced by the number of bytes written.
+///
+/// Returns a future that resolves to the number of bytes written, or an error.
 pub fn write<'a>(fd: &impl AsFd, buf: &'a [u8]) -> ErrnoOrFuture<UsizeFuture<'a>> {
     write_with_deadline(fd, buf, None)
 }
 
+/// Writes data from a buffer with a deadline.
+///
+/// Like [`write`], but with an optional deadline. If the operation does not complete
+/// before the deadline, it will fail with `Errno::TIMEDOUT`.
+///
+/// Returns a future that resolves to the number of bytes written, or an error.
 pub fn write_with_deadline<'a>(
     fd: &impl AsFd,
     buf: &'a [u8],
@@ -482,6 +643,12 @@ pub fn write_with_deadline<'a>(
     }
 }
 
+/// Writes data from a buffer with a timeout.
+///
+/// Like [`write`], but with an optional timeout duration. If the operation does not
+/// complete within the timeout, it will fail with `Errno::TIME`.
+///
+/// Returns a future that resolves to the number of bytes written, or an error.
 pub fn write_with_timeout<'a>(
     fd: &impl AsFd,
     buf: &'a [u8],
@@ -498,6 +665,12 @@ pub fn write_with_timeout<'a>(
     )
 }
 
+/// Sends data on a socket.
+///
+/// Transmits data from `buf` to the connected peer on the socket.
+/// This is equivalent to the `send(2)` system call.
+///
+/// Returns a future that resolves to the number of bytes sent, or an error.
 pub fn send<'a>(
     fd: &impl AsFd,
     buf: &'a [u8],
@@ -515,6 +688,12 @@ pub fn send<'a>(
     )
 }
 
+/// Receives data from a socket.
+///
+/// Receives data from the connected peer into `buf`.
+/// This is equivalent to the `recv(2)` system call.
+///
+/// Returns a future that resolves to the number of bytes received, or an error.
 pub fn recv<'a>(
     fd: &impl AsFd,
     buf: &'a mut [u8],
@@ -532,6 +711,12 @@ pub fn recv<'a>(
     )
 }
 
+/// Receives a message from a socket.
+///
+/// Receives a message from the socket, optionally including ancillary data.
+/// This is equivalent to the `recvmsg(2)` system call.
+///
+/// Returns a future that resolves to the number of bytes received, or an error.
 pub fn recvmsg<'a>(
     fd: &impl AsFd,
     msghdr: &'a mut MsgHdr,
@@ -550,6 +735,12 @@ pub fn recvmsg<'a>(
     )
 }
 
+/// Sends a message on a socket.
+///
+/// Sends a message on the socket, optionally including ancillary data.
+/// This is equivalent to the `sendmsg(2)` system call.
+///
+/// Returns a future that resolves to the number of bytes sent, or an error.
 pub fn sendmsg<'a>(
     fd: &impl AsFd,
     msghdr: &'a mut MsgHdr,
@@ -567,6 +758,17 @@ pub fn sendmsg<'a>(
     )
 }
 
+/// Writes data from a buffer to a file descriptor at a specific offset.
+///
+/// This performs a positioned write (pwrite), writing the contents of `buf` to
+/// the file descriptor `fd` starting at the given byte `offset`. Unlike regular
+/// writes, pwrite does not modify the file's current position.
+///
+/// if `polled` is true, uses io_uring's polled mode for potentially lower
+/// latency on devices that support polling (e.g., NVMe drives with polling
+/// enabled). Polled mode spins on completion rather than using interrupts.
+///
+/// Returns the number of bytes written, or an error.
 pub fn pwrite_polled<'a>(
     fd: impl AsFd,
     buf: &'a [u8],
@@ -586,10 +788,26 @@ pub fn pwrite_polled<'a>(
     )
 }
 
+/// Writes data from a buffer to a file descriptor at a specific offset.
+///
+/// This performs a positioned write (pwrite), writing the contents of `buf` to
+/// the file descriptor `fd` starting at the given byte `offset`. Unlike regular
+/// writes, pwrite does not modify the file's current position.
+///
+/// Does not use polled I/O mode.
+///
+/// Returns the number of bytes written, or an error.
 pub fn pwrite<'a>(fd: &impl AsFd, buf: &'a [u8], offset: u64) -> UsizeFuture<'a> {
     pwrite_polled(fd, buf, offset, false)
 }
 
+/// Reads data from a file descriptor into multiple buffers.
+///
+/// Performs a scatter-gather read, reading data from the file descriptor into
+/// multiple buffers in a single operation. This is equivalent to the
+/// `readv(2)` or `preadv(2)` system call.
+///
+/// Returns a future that resolves to the number of bytes read, or an error.
 pub fn readv<'a>(fd: &impl AsFd, iovec: &'a [iovec], offset: Option<u64>) -> UsizeFuture<'a> {
     let fd = fd.as_fd().as_raw_fd();
     UsizeFuture::new(
@@ -602,10 +820,22 @@ pub fn readv<'a>(fd: &impl AsFd, iovec: &'a [iovec], offset: Option<u64>) -> Usi
     )
 }
 
+/// Reads data from a file descriptor into a buffer.
+///
+/// Reads data from the file descriptor at the current position into `buf`.
+/// The file position is advanced by the number of bytes read.
+///
+/// Returns a future that resolves to the number of bytes read, or an error.
 pub fn read<'a>(fd: &impl AsFd, buf: &'a mut [u8]) -> UsizeFuture<'a> {
     read_with_timeout(fd, buf, None)
 }
 
+/// Reads data from a file descriptor with a deadline.
+///
+/// Like [`read`], but with an optional deadline. If the operation does not complete
+/// before the deadline, it will fail with `Errno::TIMEDOUT`.
+///
+/// Returns a future that resolves to the number of bytes read, or an error.
 pub fn read_with_deadline<'a>(
     fd: &impl AsFd,
     buf: &'a mut [u8],
@@ -628,6 +858,12 @@ pub fn read_with_deadline<'a>(
     }
 }
 
+/// Reads data from a file descriptor with a timeout.
+///
+/// Like [`read`], but with an optional timeout duration. If the operation does not
+/// complete within the timeout, it will fail with `Errno::TIME`.
+///
+/// Returns a future that resolves to the number of bytes read, or an error.
 pub fn read_with_timeout<'a>(
     fd: &impl AsFd,
     buf: &'a mut [u8],
@@ -644,6 +880,17 @@ pub fn read_with_timeout<'a>(
     )
 }
 
+/// Reads data from a file descriptor at a specific offset into a buffer.
+///
+/// This performs a positioned read (pread), reading from the file descriptor `fd`
+/// starting at the given byte `offset` into `buf`. Unlike regular reads, pread does
+/// not modify the file's current position.
+///
+/// If `polled` is true, uses io_uring's polled mode for potentially lower latency
+/// on devices that support polling (e.g., NVMe drives with polling enabled).
+/// Polled mode spins on completion rather than using interrupts.
+///
+/// Returns the number of bytes read, or an error.
 pub fn pread_polled<'a>(
     fd: impl AsFd,
     buf: &'a mut [u8],
@@ -663,10 +910,23 @@ pub fn pread_polled<'a>(
     )
 }
 
+/// Reads data from a file descriptor at a specific offset into a buffer.
+///
+/// This performs a positioned read (pread), reading from the file descriptor `fd`
+/// starting at the given byte `offset` into `buf`. Unlike regular reads, pread does
+/// not modify the file's current position.
+///
+/// Returns a the number of bytes read, or an error.
 pub fn pread<'a>(fd: &impl AsFd, buf: &'a mut [u8], offset: u64) -> UsizeFuture<'a> {
     pread_polled(fd, buf, offset, false)
 }
 
+/// Closes a file descriptor.
+///
+/// Closes the file descriptor, releasing any associated resources. The file descriptor
+/// is consumed and cannot be used after this operation.
+///
+/// Returns a future that resolves to `()` on success, or an error.
 pub fn close(fd: OwnedFd) -> UnitFuture<'static> {
     // we are consuming the fd ourselves, so suppress the Drop trait
     let fd = ManuallyDrop::new(fd);
@@ -674,6 +934,12 @@ pub fn close(fd: OwnedFd) -> UnitFuture<'static> {
     UnitFuture::new(opcode::Close::new(Fd(fd)).build(), fd, None, IOType::Close)
 }
 
+/// Performs a no-operation.
+///
+/// Submits a no-op entry to io_uring. This can be useful for testing or for
+/// ensuring ordering between other operations.
+///
+/// Returns a future that resolves to `()` on success, or an error.
 pub fn nop() -> UnitFuture<'static> {
     UnitFuture::new(opcode::Nop::new().build(), -1, None, IOType::Nop)
 }
@@ -697,6 +963,12 @@ pub fn uring_cmd(fd: &impl AsFd, op: u32, cmd: [u8; 80]) -> UringCmdFuture<'_> {
     )
 }
 
+/// Support direct command passthrough to underlying devices behind io_uring, with polled mode.
+///
+/// Like [`uring_cmd`], but uses io_uring's polled mode for potentially lower latency
+/// on devices that support polling. Polled mode spins on completion rather than using interrupts.
+///
+/// See [`uring_cmd`] for more details on NVMe passthru commands.
 #[cfg(feature = "io_uring_cmd")]
 pub fn uring_cmd_polled(fd: &impl AsFd, op: u32, cmd: [u8; 80]) -> UringCmdFuture<'_> {
     let fd = fd.as_fd().as_raw_fd();
@@ -869,12 +1141,20 @@ where
     future.await
 }
 
+/// Writes a tracing event for the current task.
+///
+/// Records a tracing event associated with the currently executing task.
+/// This is useful for debugging and performance analysis.
 pub fn write_event(event: Events) {
     let task_state = TaskState::get();
     let task_id = task_state.current_task.as_ref().unwrap().task_index;
     task_state.write_event(task_id, event)
 }
 
+/// Logs a message with the current task's identity.
+///
+/// Prints a formatted message prefixed with the current thread ID and task index.
+/// Useful for debugging multi-task scenarios.
 pub fn log(args: std::fmt::Arguments<'_>) {
     let TaskIdentity {
         thread_id,
@@ -884,13 +1164,21 @@ pub fn log(args: std::fmt::Arguments<'_>) {
     print!("{:?}:{} {}", thread_id, task_index, std::fmt::format(args))
 }
 
+/// Information identifying the current task.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TaskIdentity {
+    /// The thread ID of the thread executing the task.
     pub thread_id: std::thread::ThreadId,
+    /// The index of the thread within the runtime.
     pub thread_index: u8,
+    /// The index of the task within the runtime.
     pub task_index: u16,
 }
 
+/// Returns the identity of the currently executing task.
+///
+/// Provides information about the current task including thread ID,
+/// thread index, and task index. Returns a `TaskIdentity` struct.
 pub fn task_identity() -> TaskIdentity {
     let task_state = TaskState::get();
     let thread_id = task_state.get_current_thread_id();
@@ -913,23 +1201,38 @@ pub fn task_identity() -> TaskIdentity {
     }
 }
 
+/// Returns the activity ID of the current task.
+///
+/// Activity IDs are used for tracing and correlating operations
+/// across tasks and services. Returns the UUID representing the current task's activity ID.
 #[inline(always)]
 pub fn get_activity_id() -> uuid::Uuid {
     let task_state = TaskState::get();
     task_state.get_current_activity_id()
 }
 
+/// Returns the tenant ID of the current task.
+///
+/// Tenant IDs are used for identifying the tenant or context
+/// associated with the current task. Returns the UUID representing the current task's tenant ID.
 #[inline(always)]
 pub fn get_tenant_id() -> uuid::Uuid {
     let task_state = TaskState::get();
     task_state.get_current_tenant_id()
 }
 
+/// Sets the activity ID and tenant ID for the current task.
+///
+/// Updates the current task's activity and tenant IDs, which are used
+/// for tracing and correlation purposes.
 pub fn set_activity_id_and_tenant_id(activity_id: uuid::Uuid, tenant_id: uuid::Uuid) {
     let mut task_state = TaskState::get();
     task_state.set_current_activity_id_and_tenant_id(activity_id, tenant_id);
 }
 
+/// Sets the high priority flag for the current task.
+///
+/// High priority tasks may be scheduled preferentially by the runtime.
 pub fn set_high_priority(high_priority: bool) {
     let task_state = TaskState::get();
     task_state

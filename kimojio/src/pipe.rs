@@ -22,6 +22,9 @@ use rustix::{
     net::{AddressFamily, SocketFlags, SocketType, socketpair},
 };
 
+/// Creates a pair of bidirectional connected pipes.
+///
+/// Returns two file descriptors where data written to one can be read from the other.
 pub fn bipipe() -> (OwnedFd, OwnedFd) {
     socketpair(
         AddressFamily::UNIX,

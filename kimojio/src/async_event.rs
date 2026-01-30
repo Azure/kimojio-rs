@@ -34,6 +34,12 @@ use std::task::{Context, Poll, Waker};
 use std::time::{Duration, Instant};
 use uuid::Uuid;
 
+/// An event that can be used to suspend tasks until a condition occurs.
+///
+/// `AsyncEvent` can be set or reset. Tasks can wait until it is set,
+/// causing them to suspend. When setting an `AsyncEvent`, you can optionally
+/// choose how many waiters to wake up using `set_wake_one()` or `set_wake_n()`
+/// (plain `set()` will wake up all waiters).
 #[derive(Debug, Default)]
 pub struct AsyncEvent {
     state: Cell<bool>,
@@ -44,10 +50,12 @@ pub struct AsyncEvent {
 static_assertions::const_assert!(impls::impls!(AsyncEvent: !Send & !Sync));
 
 impl AsyncEvent {
+    /// Creates a new `AsyncEvent` in the reset (unset) state.
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Creates a new `AsyncEvent` with the specified initial state.
     pub fn with_state(state: bool) -> Self {
         Self {
             state: Cell::new(state),

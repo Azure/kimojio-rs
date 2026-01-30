@@ -22,6 +22,12 @@
 use crate::{CanceledError, async_event::AsyncEvent};
 use std::cell::Cell;
 
+/// A counting semaphore for limiting concurrent access to resources.
+///
+/// `AsyncSemaphore` manages a count of available tokens. Tasks can acquire
+/// tokens (decrementing the count) and release them (incrementing the count).
+/// If no tokens are available, acquiring tasks will be suspended until
+/// tokens are released.
 pub struct AsyncSemaphore {
     tokens: Cell<usize>,
     available: AsyncEvent,
@@ -31,6 +37,7 @@ pub struct AsyncSemaphore {
 static_assertions::const_assert!(impls::impls!(AsyncSemaphore: !Send & !Sync));
 
 impl AsyncSemaphore {
+    /// Creates a new `AsyncSemaphore` with the specified number of initial tokens.
     pub fn new(initial_count: usize) -> Self {
         let available = AsyncEvent::new();
         if initial_count > 0 {
@@ -56,7 +63,7 @@ impl AsyncSemaphore {
         Ok(())
     }
 
-    // Increase token count by one, and wake up an waiting acquirer if any.
+    /// Releases a token back to the semaphore, waking one waiting task if any.
     pub fn release(&self) {
         self.tokens.set(self.tokens.get() + 1);
         self.available.set_wake_one();

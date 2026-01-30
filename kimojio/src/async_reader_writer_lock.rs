@@ -22,6 +22,10 @@ use crate::{CanceledError, async_event::AsyncEvent};
 use std::cell::{Cell, UnsafeCell};
 use std::ops::{Deref, DerefMut};
 
+/// A reader-writer lock for single-threaded, multi-task environments.
+///
+/// Allows either multiple readers or a single writer to access the data.
+/// Readers get shared immutable access, while writers get exclusive mutable access.
 pub struct AsyncReaderWriterLock<T> {
     data: UnsafeCell<T>,
     readers: Cell<usize>,
@@ -34,6 +38,7 @@ pub struct AsyncReaderWriterLock<T> {
 static_assertions::const_assert!(impls::impls!(AsyncReaderWriterLock<()>: !Send & !Sync));
 
 impl<T> AsyncReaderWriterLock<T> {
+    /// Creates a new `AsyncReaderWriterLock` containing the given value.
     pub fn new(value: T) -> Self {
         let read_event = AsyncEvent::new();
         read_event.set();
@@ -63,9 +68,10 @@ impl<T> AsyncReaderWriterLock<T> {
         Ok(WriteRef { parent: self })
     }
 
-    // Wait until there are no writers, and then return a ReadRef that only
-    // allows const reference access to the data. No writers will be able to get
-    // a WriteRef until there are no ReadRef live.
+    /// Waits until there are no writers, then returns a `ReadRef` for shared access.
+    ///
+    /// Multiple readers can hold `ReadRef` simultaneously, but no writer can
+    /// acquire a `WriteRef` while any `ReadRef` exists.
     pub async fn lock_read(&self) -> Result<ReadRef<'_, T>, CanceledError> {
         self.assert_valid();
         while self.writer.get() {
@@ -91,6 +97,7 @@ impl<T: Default> Default for AsyncReaderWriterLock<T> {
     }
 }
 
+/// A guard providing exclusive write access to data protected by `AsyncReaderWriterLock`.
 pub struct WriteRef<'a, T> {
     parent: &'a AsyncReaderWriterLock<T>,
 }
@@ -127,11 +134,15 @@ impl<T> Drop for WriteRef<'_, T> {
     }
 }
 
+/// A guard providing shared read access to data protected by `AsyncReaderWriterLock`.
 pub struct ReadRef<'a, T> {
     parent: &'a AsyncReaderWriterLock<T>,
 }
 
 impl<'a, T> ReadRef<'a, T> {
+    /// Upgrades this read lock to a write lock, waiting if necessary.
+    ///
+    /// The read lock is released before acquiring the write lock.
     pub async fn upgrade(self) -> Result<WriteRef<'a, T>, CanceledError> {
         self.parent.readers.set(self.parent.readers.get() - 1);
         let result = self.parent.lock_write().await?;

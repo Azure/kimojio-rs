@@ -6,6 +6,9 @@
 
 use std::time::Duration;
 
+/// Configuration options for the io_uring runtime.
+///
+/// Use the builder pattern to customize runtime behavior.
 #[derive(Default)]
 pub struct Configuration {
     /// Adapter around a set of trace buffers which the data path threads will
@@ -22,16 +25,19 @@ pub struct Configuration {
     pub(crate) busy_poll: BusyPoll,
 }
 
+/// Controls whether the event loop busy-polls for I/O completion.
+///
+/// Busy polling can reduce latency at the cost of CPU usage.
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Default)]
 pub enum BusyPoll {
-    /// never busy poll, always suspend thread until I/O completes if no tasks are ready
+    /// Never busy poll; always suspend the thread until I/O completes.
     #[default]
     Never,
 
-    /// always busy poll, never suspend the thread
+    /// Always busy poll; never suspend the thread.
     Always,
 
-    /// busy poll the thread for Duration, then suspend until an I/O completes
+    /// Busy poll for the specified duration, then suspend.
     Until(Duration),
 }
 
@@ -45,10 +51,12 @@ impl From<Option<Duration>> for BusyPoll {
 }
 
 impl Configuration {
+    /// Creates a new `Configuration` with default settings.
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Sets the trace buffer manager for runtime event tracing.
     pub fn set_trace_buffer_manager(
         mut self,
         trace_buffer_manager: Box<dyn crate::TraceConfiguration>,
@@ -57,6 +65,7 @@ impl Configuration {
         self
     }
 
+    /// Sets the busy polling behavior for the event loop.
     pub fn set_busy_poll(mut self, busy_poll: BusyPoll) -> Self {
         self.busy_poll = busy_poll;
         self

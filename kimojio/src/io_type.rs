@@ -2,6 +2,9 @@
 // Licensed under the MIT License.
 use std::fmt::Display;
 
+/// The type of I/O operation being performed.
+///
+/// Used for tracing and statistics collection.
 #[repr(u8)]
 #[derive(Copy, Clone, Debug, zerocopy::IntoBytes)]
 pub enum IOType {

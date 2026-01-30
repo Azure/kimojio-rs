@@ -45,9 +45,12 @@ impl From<TimeoutError> for ChannelError {
     }
 }
 
+/// An error indicating an operation timed out or was canceled.
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub enum TimeoutError {
+    /// The operation exceeded its deadline.
     Timeout,
+    /// The operation was canceled.
     Canceled,
 }
 
@@ -66,6 +69,7 @@ impl From<TimeoutError> for Errno {
     }
 }
 
+/// An error indicating an operation was canceled.
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub struct CanceledError {}
 
@@ -75,8 +79,11 @@ impl From<CanceledError> for Errno {
     }
 }
 
+/// An error from awaiting a task handle.
 pub enum TaskHandleError {
+    /// The task was canceled before completion.
     Canceled,
+    /// The task panicked during execution.
     Panic(Box<dyn std::any::Any + Send + 'static>),
 }
 

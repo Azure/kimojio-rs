@@ -4,12 +4,17 @@
 use crate::io_type::IOType;
 use uuid::Uuid;
 
+/// A wrapper containing a trace event with context information.
 pub struct EventEnvelope {
+    /// The index of the thread that generated this event.
     pub thread_index: u8,
+    /// The index of the task that generated this event.
     pub task_index: u16,
+    /// The trace event.
     pub event: Events,
 }
 
+/// Trace events emitted by the runtime for debugging and performance analysis.
 pub enum Events {
     TaskScheduled {
         activity_id: Uuid,
@@ -69,6 +74,10 @@ pub enum Events {
     },
 }
 
+/// A trait for receiving trace events from the runtime.
+///
+/// Implement this trait to collect and process runtime trace events.
 pub trait TraceConfiguration: Send {
+    /// Called when a trace event is emitted.
     fn trace(&self, event: EventEnvelope);
 }

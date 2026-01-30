@@ -24,21 +24,27 @@
 
 use std::num::NonZeroUsize;
 
+/// A slot in the handle table, either free or containing a value.
 pub enum Slot<T> {
+    /// A free slot with a pointer to the next free slot.
     Free { next_free: Option<Index> },
+    /// A slot containing a value.
     Used { value: T },
 }
 
+/// A table that assigns unique indices to values for O(1) insertion and lookup.
 pub struct HandleTable<T> {
     data: Vec<Slot<T>>,
     free_list: Option<Index>, // Head of the linked list of free slots, stored as index.
     requests: usize,
 }
 
+/// An index into a `HandleTable`.
 #[derive(Copy, Clone, Debug, Eq, Hash, Ord, PartialOrd, PartialEq)]
 pub struct Index(NonZeroUsize);
 
 impl Index {
+    /// Returns the underlying index value.
     pub fn get(&self) -> usize {
         self.0.get()
     }
@@ -51,6 +57,7 @@ impl From<NonZeroUsize> for Index {
 }
 
 impl<T> HandleTable<T> {
+    /// Creates a new empty `HandleTable`.
     pub fn new() -> Self {
         Self {
             data: Vec::new(),
@@ -59,12 +66,14 @@ impl<T> HandleTable<T> {
         }
     }
 
+    /// Removes all entries from the table.
     pub fn clear(&mut self) {
         self.data.clear();
         self.free_list = None;
         self.requests = 0;
     }
 
+    /// Returns the number of values in the table.
     pub fn len(&self) -> usize {
         self.requests
     }

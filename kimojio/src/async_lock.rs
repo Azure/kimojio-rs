@@ -22,6 +22,11 @@ use std::{
 
 use crate::{AsyncEvent, CanceledError, TimeoutError};
 
+/// An async-aware mutex for single-threaded, multi-task environments.
+///
+/// `AsyncLock` provides interior mutability with exclusive access guarantees.
+/// Only one `AsyncLockRef` can be live at any time. Other tasks attempting
+/// to acquire the lock will be suspended until it is released.
 pub struct AsyncLock<T> {
     value: UnsafeCell<T>,
     unlocked: AsyncEvent,
@@ -31,6 +36,7 @@ pub struct AsyncLock<T> {
 static_assertions::const_assert!(impls::impls!(AsyncLock<()>: !Send & !Sync));
 
 impl<T> AsyncLock<T> {
+    /// Creates a new `AsyncLock` containing the given value.
     pub fn new(value: T) -> Self {
         let unlocked = AsyncEvent::new();
         unlocked.set();
@@ -97,6 +103,10 @@ impl<T: Default> Default for AsyncLock<T> {
     }
 }
 
+/// A guard that provides exclusive access to the data protected by an `AsyncLock`.
+///
+/// When this guard is dropped, the lock is released and other tasks
+/// waiting on the lock may proceed.
 pub struct AsyncLockRef<'a, T> {
     parent: &'a AsyncLock<T>,
 }

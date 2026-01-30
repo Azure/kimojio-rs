@@ -12,6 +12,9 @@ pub struct BufferPipe {
 }
 
 impl BufferPipe {
+    /// Creates a pair of connected buffer pipes for bidirectional communication.
+    ///
+    /// Each pipe can read from one buffer and write to the other.
     pub fn new() -> (Self, Self) {
         let a = Rc::new(BufferStream::new());
         let b = Rc::new(BufferStream::new());
@@ -71,6 +74,9 @@ struct BufferStreamState {
     amount: usize,
 }
 
+/// A single-direction in-memory buffer stream.
+///
+/// Provides async read and write operations backed by an in-memory buffer.
 pub struct BufferStream {
     state: AsyncLock<BufferStreamState>,
     available: AsyncEvent,
@@ -79,6 +85,7 @@ pub struct BufferStream {
 }
 
 impl BufferStream {
+    /// Creates a new empty buffer stream.
     pub fn new() -> Self {
         let not_full = AsyncEvent::new();
         not_full.set();
@@ -226,7 +233,10 @@ impl AsyncStreamWrite for BufferStream {
     }
 }
 
+/// The read half of a `BufferPipe` after splitting.
 pub struct BufferReadStream(Rc<BufferStream>);
+
+/// The write half of a `BufferPipe` after splitting.
 pub struct BufferWriteStream(Rc<BufferStream>);
 
 impl AsyncStreamRead for BufferReadStream {

@@ -80,6 +80,7 @@ impl<T: Debug> Debug for MutInPlaceCell<T> {
 }
 
 impl<T> MutInPlaceCell<T> {
+    /// Creates a new `MutInPlaceCell` containing the given value.
     pub fn new(value: T) -> Self {
         Self {
             cell: std::cell::UnsafeCell::new(value),
@@ -88,6 +89,10 @@ impl<T> MutInPlaceCell<T> {
         }
     }
 
+    /// Provides mutable access to the contained value through a closure.
+    ///
+    /// The closure receives a mutable reference to the value. Recursive calls
+    /// to `use_mut` from within the closure will panic.
     #[inline(always)]
     pub fn use_mut<U>(&self, f: impl FnOnce(&mut T) -> U) -> U {
         let _guard = self.recursion_check.enter();

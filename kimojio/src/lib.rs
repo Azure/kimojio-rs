@@ -197,7 +197,7 @@ where
     run_with_configuration(thread_index, main, Configuration::new())
 }
 
-// only used by tests
+/// Runs a test future with default configuration. For testing only.
 pub fn run_test<Fut>(test_name: &str, main: Fut)
 where
     Fut: Future<Output = ()> + 'static,
@@ -205,6 +205,7 @@ where
     run_test_with_handle(test_name, move |_| main, false, BusyPoll::Never);
 }
 
+/// Runs a test future with tracing enabled. For testing only.
 pub fn run_test_with_trace<Fut>(test_name: &str, main: Fut)
 where
     Fut: Future<Output = ()> + 'static,
@@ -212,7 +213,7 @@ where
     run_test_with_handle(test_name, move |_| main, true, BusyPoll::Never);
 }
 
-// only used by tests
+/// Runs a test future with a runtime handle and custom options. For testing only.
 pub fn run_test_with_handle(
     _test_name: &str,
     main: impl AsyncFnOnce(RuntimeHandle) + 'static,
@@ -234,6 +235,7 @@ pub fn run_test_with_handle(
     }
 }
 
+/// Returns the OpenSSL version as a tuple of (major, minor, patch).
 #[cfg(feature = "tls")]
 pub fn tls_version() -> (u64, u64, u64) {
     kimojio_tls::version()

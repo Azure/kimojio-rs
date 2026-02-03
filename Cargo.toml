@@ -4,6 +4,8 @@ members = [
     "kimojio",
     "kimojio-macros",
     "kimojio-tls",
+    "kimojio-util",
+    "kimojio-tests",
     "perf",
     "examples/copyfile",
     "examples/tls-echo-server",
@@ -59,3 +61,15 @@ syn = { version = "2", features = ["full"] }
 # for examples
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
+
+# for kimojio-util
+futures-util = { version = "0.3", default-features = false, features = ["io", "std"] }
+kimojio-util = { path = "kimojio-util", version = "0.14.0" }
+
+# for testing (kimojio-tests)
+bytes = "1"
+http-body-util = "0.1"
+hyper = { version = "1", default-features = false, features = ["http1", "server", "client"] }
+hyper-util = { version = "0.1", default-features = false, features = ["tokio", "http1", "client"] }
+tokio = { version = "1", default-features = false, features = ["io-util"] }
+tokio-util = { version = "0.7", default-features = false, features = ["compat"] }

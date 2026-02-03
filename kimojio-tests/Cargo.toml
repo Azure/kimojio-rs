@@ -1,0 +1,21 @@
+[package]
+name = "kimojio-tests"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+readme.workspace = true
+publish = false
+
+[dependencies]
+bytes.workspace = true
+futures-util.workspace = true
+http-body-util.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
+kimojio.workspace = true
+kimojio-util.workspace = true
+rustix.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true

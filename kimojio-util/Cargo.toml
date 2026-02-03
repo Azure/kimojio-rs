@@ -1,0 +1,16 @@
+[package]
+name = "kimojio-util"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+readme = "README.md"
+description = "Utility adapters bridging Kimojio async streams with futures_util and tokio I/O traits."
+keywords = ["async", "io", "io-uring", "futures", "adapter"]
+categories = ["asynchronous", "network-programming"]
+
+[dependencies]
+futures-util.workspace = true
+kimojio.workspace = true
+pin-project-lite.workspace = true

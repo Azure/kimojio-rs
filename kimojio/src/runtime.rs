@@ -96,9 +96,9 @@ fn process_completions(
         want,
         iopoll,
     } = trace_info;
-    let completions = task_state.get_completion_count(iopoll) as u64;
+    let completions_hint = task_state.get_completion_count(iopoll) as u64;
 
-    if want || submissions > 0 || completions > 0 {
+    if want || submissions > 0 || completions_hint > 0 {
         // Only trace ring events if they will wait for I/O
         task_state.write_event(
             0,
@@ -106,7 +106,7 @@ fn process_completions(
                 task_count: task_state.task_count as u32,
                 tag: ring_tag,
                 submissions,
-                completions,
+                completions: completions_hint,
                 in_flight_io,
                 iopoll,
                 want,
@@ -115,7 +115,9 @@ fn process_completions(
         );
     }
 
+    let mut completions = 0;
     while let Some(cqe) = task_state.get_next_cqe(iopoll) {
+        completions += 1;
         // SAFETY: there was one Rc::into_raw when the SQE was successfully
         // submitted and there will be one resulting CQE where we reconstitute
         // the Rc. When a timeout is used, there is a compensating
@@ -514,6 +516,54 @@ mod test {
             },
             false,
             BusyPoll::Never,
+        );
+    }
+
+    /// Regression test for in_flight_io accounting drift.
+    ///
+    /// Each `read_with_timeout(_, _, Some(_))` submits a linked pair of SQEs
+    /// (read + link_timeout -> 2 SQEs, 2 CQEs) and increments `in_flight_io`
+    /// by 2. When the CQEs are drained in `process_completions`, the counter
+    /// must be decremented by the actual number of CQEs consumed.
+    #[crate::test]
+    async fn test_in_flight_io_accounting_with_linked_timeouts() {
+        use futures::future::join_all;
+        use std::time::Duration;
+
+        // Yield once so the runtime-server task starts its recv_message()
+        // read, establishing the steady-state baseline for in_flight_io.
+        operations::sleep(Duration::from_millis(1)).await.unwrap();
+        let baseline = crate::task::TaskState::get().stats.in_flight_io.get();
+
+        for _ in 0..200 {
+            let mut writers = Vec::new();
+            let futs: Vec<_> = (0..50)
+                .map(|_| {
+                    let (reader, writer) = crate::pipe::bipipe();
+                    writers.push(writer);
+                    async move {
+                        let mut buf = [0u8; 1];
+                        let _ = operations::read_with_timeout(
+                            &reader,
+                            &mut buf,
+                            Some(Duration::from_millis(1)),
+                        )
+                        .await;
+                    }
+                })
+                .collect();
+            join_all(futs).await;
+            drop(writers);
+        }
+
+        // One more event-loop iteration to drain any trailing CQEs.
+        operations::sleep(Duration::from_millis(1)).await.unwrap();
+
+        let after = crate::task::TaskState::get().stats.in_flight_io.get();
+        assert_eq!(
+            after, baseline,
+            "in_flight_io drifted from {baseline} to {after} after linked-timeout operations; \
+             CQE completion counting is broken"
         );
     }
 

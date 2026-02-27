@@ -953,13 +953,20 @@ pub fn nop() -> UnitFuture<'static> {
 /// 1) The file descriptor should be a FD for the /dev/ngDn1 NVMe generic dev
 /// 2) The op value is a special value for NVMe passthru
 #[cfg(feature = "io_uring_cmd")]
-pub fn uring_cmd(fd: &impl AsFd, op: u32, cmd: [u8; 80]) -> UringCmdFuture<'_> {
+pub fn uring_cmd(
+    fd: &impl AsFd,
+    op: u32,
+    cmd: [u8; 80],
+    user_data: CompletionResources,
+) -> UringCmdFuture<'_> {
     let fd = fd.as_fd().as_raw_fd();
-    UringCmdFuture::new(
+    UringCmdFuture::with_polled(
         opcode::UringCmd80::new(Fd(fd), op).cmd(cmd).build(),
         fd,
         None,
         IOType::NvmeCmd,
+        false,
+        user_data,
     )
 }
 
@@ -970,7 +977,12 @@ pub fn uring_cmd(fd: &impl AsFd, op: u32, cmd: [u8; 80]) -> UringCmdFuture<'_> {
 ///
 /// See [`uring_cmd`] for more details on NVMe passthru commands.
 #[cfg(feature = "io_uring_cmd")]
-pub fn uring_cmd_polled(fd: &impl AsFd, op: u32, cmd: [u8; 80]) -> UringCmdFuture<'_> {
+pub fn uring_cmd_polled(
+    fd: &impl AsFd,
+    op: u32,
+    cmd: [u8; 80],
+    user_data: CompletionResources,
+) -> UringCmdFuture<'_> {
     let fd = fd.as_fd().as_raw_fd();
     UringCmdFuture::with_polled(
         opcode::UringCmd80::new(Fd(fd), op).cmd(cmd).build(),
@@ -978,7 +990,7 @@ pub fn uring_cmd_polled(fd: &impl AsFd, op: u32, cmd: [u8; 80]) -> UringCmdFutur
         None,
         IOType::NvmeCmd,
         true,
-        CompletionResources::None,
+        user_data,
     )
 }
 

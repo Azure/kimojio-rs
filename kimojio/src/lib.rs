@@ -136,7 +136,7 @@ pub(crate) struct Completion {
 }
 
 #[allow(dead_code)]
-enum CompletionResources {
+pub enum CompletionResources {
     None,
     Timespec(rustix_uring::types::Timespec),
     Box(Box<dyn std::any::Any>),

@@ -148,6 +148,23 @@ impl<T> HandleTable<T> {
         self.requests == 0
     }
 
+    /// Removes all values from the table, returning an iterator of `(Index, T)` pairs.
+    ///
+    /// After calling `drain`, the table is empty.
+    pub fn drain(&mut self) -> impl Iterator<Item = (Index, T)> {
+        self.free_list = None;
+        self.requests = 0;
+        self.data
+            .drain(..)
+            .enumerate()
+            .filter_map(|(offset, slot)| match slot {
+                Slot::Used { value } => {
+                    Some((Index(NonZeroUsize::new(offset + 1).unwrap()), value))
+                }
+                Slot::Free { .. } => None,
+            })
+    }
+
     /// Returns an iterator of valid indexes.
     pub fn indexes(&self) -> impl Iterator<Item = Index> + use<'_, T> {
         self.data
@@ -513,6 +530,64 @@ mod test {
         map.insert(idx1, "value1");
         map.insert(idx2, "value2");
         assert_eq!(map.get(&idx1), Some(&"value1"));
+    }
+
+    #[test]
+    fn test_drain() {
+        let mut handle_table = HandleTable::new();
+
+        // Drain empty table
+        let items: Vec<_> = handle_table.drain().collect();
+        assert!(items.is_empty());
+        assert!(handle_table.is_empty());
+
+        // Insert values and remove one to create a free slot
+        let idx1 = handle_table.insert(10);
+        let idx2 = handle_table.insert(20);
+        let idx3 = handle_table.insert(30);
+        handle_table.remove(idx2);
+
+        // Drain should yield only used slots
+        let mut items: Vec<_> = handle_table.drain().collect();
+        items.sort_by_key(|(idx, _)| *idx);
+        assert_eq!(items, vec![(idx1, 10), (idx3, 30)]);
+
+        // Table should be empty after drain
+        assert!(handle_table.is_empty());
+        assert_eq!(handle_table.len(), 0);
+
+        // Should be able to insert new values after drain
+        let new_idx = handle_table.insert(42);
+        assert_eq!(handle_table.get(new_idx), Some(&42));
+        assert_eq!(handle_table.len(), 1);
+    }
+
+    #[test]
+    fn test_drain_drops_values() {
+        let drop_count = Rc::new(Cell::new(0usize));
+
+        struct Dropper {
+            drop_count: Rc<Cell<usize>>,
+        }
+
+        impl Drop for Dropper {
+            fn drop(&mut self) {
+                self.drop_count.set(self.drop_count.get() + 1);
+            }
+        }
+
+        let mut handle_table = HandleTable::new();
+        for _ in 0..5 {
+            handle_table.insert(Dropper {
+                drop_count: drop_count.clone(),
+            });
+        }
+
+        // Drain and drop the iterator without consuming
+        assert_eq!(drop_count.get(), 0);
+        drop(handle_table.drain());
+        assert_eq!(drop_count.get(), 5);
+        assert!(handle_table.is_empty());
     }
 
     #[test]

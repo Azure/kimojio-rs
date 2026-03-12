@@ -243,7 +243,7 @@ pub struct WaitData {
     pub link: LinkedListLink,
 }
 
-intrusive_adapter!(pub WaitDataAdapter = Rc<WaitData>: WaitData { link: LinkedListLink });
+intrusive_adapter!(pub WaitDataAdapter = Rc<WaitData>: WaitData { link => LinkedListLink });
 
 impl WaitData {
     fn set_waker(&self, cx: &mut Context<'_>) {

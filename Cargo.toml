@@ -21,11 +21,11 @@ readme = "README.md"
 
 [workspace.dependencies]
 cc = "1"
-criterion = { version = "0.7", default-features = false }
+criterion = { version = "0.8", default-features = false }
 foreign-types-shared = "0.1"
 futures = "0.3"
 impls = "1"
-intrusive-collections = "0.9"
+intrusive-collections = "0.10"
 kimojio = { path = "kimojio", version = "0.14.1" }
 kimojio-macros = { path = "kimojio-macros", version = "0.14.1" }
 kimojio-tls = { path = "kimojio-tls", version = "0.14.1" }

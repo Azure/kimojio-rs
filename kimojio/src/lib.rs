@@ -98,8 +98,6 @@ use crate::configuration::BusyPoll;
 
 pub use kimojio_macros::{main, test};
 
-const MAX_TASK_STACK_SIZE: usize = 65536;
-
 enum CompletionState {
     /// The future is created but SQE is not yet submitted to the kernel
     Idle {

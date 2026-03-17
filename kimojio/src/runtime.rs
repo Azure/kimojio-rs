@@ -7,7 +7,7 @@ use rustix::thread::sched_getcpu;
 use rustix_uring::Errno;
 
 use crate::{
-    Completion, CompletionState, MAX_TASK_STACK_SIZE, OwnedFd, RuntimeHandle,
+    Completion, CompletionState, OwnedFd, RuntimeHandle,
     configuration::{BusyPoll, Configuration},
     task::{Task, TaskReadyState, TaskState},
     task_ref::create_waker,
@@ -332,8 +332,6 @@ impl Runtime {
     where
         Fut: Future + 'static,
     {
-        assert!(std::mem::size_of::<Fut>() <= MAX_TASK_STACK_SIZE);
-
         let mut task_state = TaskState::get();
 
         // Set a new activity_id for each uringruntime thread

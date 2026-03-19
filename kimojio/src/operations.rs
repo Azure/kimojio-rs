@@ -2327,10 +2327,10 @@ mod test {
 
     #[crate::test]
     async fn file_tests() {
-        let root = c"/tmp/kimojio-test";
-        let filename = c"/tmp/kimojio-test/file.txt";
-        let newpath1 = c"/tmp/kimojio-test/file.txt-1.link";
-        let newpath2 = c"/tmp/kimojio-test/file.txt-2.link";
+        let root = c"/tmp/file_tests";
+        let filename = c"/tmp/file_tests/file.txt";
+        let newpath1 = c"/tmp/file_tests/file.txt-1.link";
+        let newpath2 = c"/tmp/file_tests/file.txt-2.link";
 
         match operations::mkdir(root, 0o775.into()).await {
             Ok(()) => {}

@@ -835,19 +835,19 @@ pub(crate) mod test {
 
         use crate::tlscontext::TlsContext;
 
-        const DEFAULT_CERT_LOCATION: &str = "/tmp/";
-        const DEFAULT_CRL_SERVER_DIR: &str = "/tmp/kimoji_server_crl";
-        const DEFAULT_CRL_CLIENT_DIR: &str = "/tmp/kimoji_client_crl";
+        const DEFAULT_CERT_LOCATION: &str = "/tmp/kimojio-test/";
+        const DEFAULT_CRL_SERVER_DIR: &str = "/tmp/kimojio-test/kimoji_server_crl";
+        const DEFAULT_CRL_CLIENT_DIR: &str = "/tmp/kimojio-test/kimoji_client_crl";
         const DEFAULT_CLIENT_NAME_SUFFIX: &str = "client.unit.tests";
         pub(crate) const DEFAULT_SERVER_NAME: &str = "server.unit.tests";
         const DEFAULT_ADMIN_NAME: &str = "admin.unit.tests";
-        const DEFAULT_SERVER_CERT_FILE: &str = "/tmp/server_kimojiotests.crt";
-        const DEFAULT_SERVER_KEY_FILE: &str = "/tmp/server_kimojiotests.key";
-        const DEFAULT_CLIENT_CERT_FILE: &str = "/tmp/client_kimojiotests.crt";
-        const DEFAULT_CLIENT_KEY_FILE: &str = "/tmp/client_kimojiotests.key";
-        const DEFAULT_CA_CERT_FILE: &str = "/tmp/ca_kimojiotests.crt";
-        const DEFAULT_CA_KEY_FILE: &str = "/tmp/ca_kimojiotests.key";
-        const DEFAULT_LOCK_FILE: &str = "/tmp/kimojiotests.lock";
+        const DEFAULT_SERVER_CERT_FILE: &str = "/tmp/kimojio-test/server_kimojiotests.crt";
+        const DEFAULT_SERVER_KEY_FILE: &str = "/tmp/kimojio-test/server_kimojiotests.key";
+        const DEFAULT_CLIENT_CERT_FILE: &str = "/tmp/kimojio-test/client_kimojiotests.crt";
+        const DEFAULT_CLIENT_KEY_FILE: &str = "/tmp/kimojio-test/client_kimojiotests.key";
+        const DEFAULT_CA_CERT_FILE: &str = "/tmp/kimojio-test/ca_kimojiotests.crt";
+        const DEFAULT_CA_KEY_FILE: &str = "/tmp/kimojio-test/ca_kimojiotests.key";
+        const DEFAULT_LOCK_FILE: &str = "/tmp/kimojio-test/kimojiotests.lock";
 
         /// Given SSL certificate, creates a client context.
         /// If `crl_path` is provided, it enables certificate revocation checking
@@ -1095,6 +1095,9 @@ certificate = {ca_cert_file}
             lock_file: &str,
             f: impl FnOnce() -> std::io::Result<()>,
         ) -> std::io::Result<()> {
+            if let Some(parent) = std::path::Path::new(lock_file).parent() {
+                fs::create_dir_all(parent)?;
+            }
             let fd = rustix::fs::open(
                 lock_file,
                 OFlags::CREATE | OFlags::TRUNC | OFlags::RDWR,
@@ -1265,6 +1268,9 @@ certificate = {ca_cert_file}
             file: &std::path::Path,
             contents: &str,
         ) -> std::io::Result<()> {
+            if let Some(parent) = file.parent() {
+                fs::create_dir_all(parent)?;
+            }
             File::create(file)
                 .unwrap_or_else(|_| panic!("Creating {} failed", file.to_str().unwrap()))
                 .write_all(contents.as_bytes())

@@ -49,7 +49,7 @@ impl<T> SenderUnbounded<T> {
     }
 
     /// Closes the channel. Any further attempts to send messages will return an
-    /// error. Any messages that are already in the channel will be dropped.
+    /// error. Messages already in the channel can still be received.
     pub fn close(&self) {
         self.inner.close()
     }
@@ -169,6 +169,9 @@ impl<T> AsyncChannelUnbounded<T> {
 
     fn push_back(&self, message: T) -> std::result::Result<(), T> {
         self.queue.use_mut(|queue| {
+            if queue.closed {
+                return Err(message);
+            }
             queue.items.push_back(message);
             Ok(())
         })
@@ -623,8 +626,42 @@ mod test {
         // Now should get channel closed error
         assert_eq!(Err(ChannelError::Closed), rx.recv().await);
 
-        // Note: Unbounded channels may still allow sending after close()
-        // but will be closed when all senders are dropped
+        // After close, sending should fail and return the message
+        assert_eq!(Err(42), tx.send(42));
+    }
+
+    #[crate::test]
+    async fn test_unbounded_send_after_close_returns_error() {
+        let (tx, rx) = async_channel_unbounded();
+
+        tx.send(1).unwrap();
+        tx.close();
+
+        // Send after close must fail
+        assert_eq!(Err(2), tx.send(2));
+        assert_eq!(Err(3), tx.send(3));
+
+        // Previously queued message is still receivable
+        assert_eq!(Ok(1), rx.recv().await);
+
+        // No more messages — channel is closed
+        assert_eq!(Err(ChannelError::Closed), rx.recv().await);
+    }
+
+    #[crate::test]
+    async fn test_unbounded_cloned_sender_close_affects_all() {
+        let (tx1, rx) = async_channel_unbounded();
+        let tx2 = tx1.clone();
+
+        tx1.send(1).unwrap();
+        tx1.close();
+
+        // Both senders should fail after close
+        assert_eq!(Err(2), tx1.send(2));
+        assert_eq!(Err(3), tx2.send(3));
+
+        assert_eq!(Ok(1), rx.recv().await);
+        assert_eq!(Err(ChannelError::Closed), rx.recv().await);
     }
 
     #[crate::test]

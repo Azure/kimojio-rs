@@ -58,7 +58,11 @@ impl Timer {
                     let end_tick = Self::ticks();
 
                     let ticks = end_tick - start_tick;
-                    let ticks_per_us = ticks as u128 / total.as_micros();
+                    let micros = total.as_micros();
+                    if micros == 0 {
+                        continue;
+                    }
+                    let ticks_per_us = ticks as u128 / micros;
                     result = std::cmp::min(ticks_per_us as u64, result);
                 }
             }
@@ -76,7 +80,11 @@ impl Timer {
                     let end_tick = Self::ticks();
 
                     let ticks = end_tick - start_tick;
-                    let ticks_per_us = ticks as u128 / total.as_micros();
+                    let micros = total.as_micros();
+                    if micros == 0 {
+                        continue;
+                    }
+                    let ticks_per_us = ticks as u128 / micros;
                     result = std::cmp::min(ticks_per_us as u64, result);
                 }
             }
@@ -85,6 +93,17 @@ impl Timer {
                 // For other architectures, use a fallback
                 result = 1; // 1 million ticks per second, or 1 tick per microsecond
             }
+        }
+        // If no iteration produced a measurable elapsed time (e.g. in simulation
+        // environments where Instant::now() doesn't advance during spin loops),
+        // fall back to 1 tick/us so callers don't panic.
+        if result == u64::MAX {
+            eprintln!(
+                "WARNING: Timer::compute_ticks_per_us: could not measure TSC frequency \
+                 (all samples had zero elapsed time). Falling back to 1 tick/us. \
+                 Timing diagnostics will be inaccurate."
+            );
+            result = 1;
         }
         result
     }

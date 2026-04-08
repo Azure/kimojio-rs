@@ -69,7 +69,9 @@ use std::time::Duration;
 let mut runtime = Runtime::new(0, Configuration::new());
 runtime.block_on(async {
     operations::virtual_clock_enable(true);
-    operations::virtual_clock_advance_idle(Duration::from_secs(60));
+    operations::virtual_clock_set_idle_advance(|now, next| {
+        next.map(|d| d.saturating_duration_since(now))
+    });
     operations::sleep(Duration::from_secs(60)).await.unwrap(); // Instant!
 });
 ```

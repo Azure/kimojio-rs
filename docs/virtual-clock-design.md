@@ -297,19 +297,28 @@ virtual clock tests.
 Returns the start time of the clock, useful for computing elapsed virtual
 time: `virtual_clock_now().duration_since(virtual_clock_epoch())`.
 
-### `virtual_clock_advance_idle(duration)`
+### `virtual_clock_set_idle_advance(callback)`
 
-Queues a clock advance that fires automatically when the runtime has no
-ready tasks. Multiple calls accumulate — each advance waits for its own
-idle point. Internally the `VirtualClockState` stores a `VecDeque<Duration>` of
-pending idle advances. After the runtime's inner poll loop drains all
-ready tasks, the runtime checks for queued idle advances and, if present,
-pops the next one, advances the clock (collecting expired wakers), drops the
-`TaskState` borrow, wakes the collected wakers, then re-borrows and loops.
+Installs a `FnMut(Instant, Option<Instant>) -> Option<Duration>` callback
+that the runtime invokes when idle. The callback receives the current virtual
+time and the next pending timer deadline (if any), and returns how far to
+advance. If it returns `None` or `Some(Duration::ZERO)`, no advancement
+occurs and the runtime blocks in io_uring. Internally the
+`VirtualClockState` stores the callback as `Option<Box<IdleAdvanceFn>>`.
+When the runtime's inner poll loop drains all ready tasks, it extracts the
+callback (via `Option::take()` to release the borrow), invokes it outside
+the `TaskState` borrow, restores the callback (unless it was replaced during
+invocation via the dirty flag mechanism), then advances the clock and wakes
+expired timers if the callback returned a non-zero duration.
 
-### `virtual_clock_pending_idle_advances()`
+### `virtual_clock_clear_idle_advance()`
 
-Returns the number of queued idle advances remaining.
+Removes the idle advance callback. Equivalent to disabling automatic
+time advancement — the runtime will block in io_uring when idle.
+
+### `virtual_clock_has_idle_advance()`
+
+Returns `true` if an idle advance callback is currently installed.
 
 ## Future Work
 

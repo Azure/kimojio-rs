@@ -376,6 +376,8 @@ impl Runtime {
         };
 
         // Bail out once all tasks complete or if shutdown() is called which sets keep_running to false
+        #[cfg(feature = "virtual-clock")]
+        let mut idle_advance_active = true; // optimistic: try callback on first iteration
         while task_state.get_task_count() > 0 && task_state.keep_running {
             // do not busy poll if the cool down time has elapsed
             let busy_poll = match self.busy_poll {
@@ -385,24 +387,34 @@ impl Runtime {
             };
 
             // When virtual clock is active, don't block in submit_and_wait
-            // if there are idle advances to apply OR self-woken tasks in the
-            // fill list (e.g., from yield-once cooperative scheduling).
+            // if there are idle advance callbacks to try OR self-woken tasks in
+            // the fill list (e.g., from yield-once cooperative scheduling).
             // Without this, submit_and_wait(1) blocks on io_uring forever
             // since self-wakeups don't produce io_uring CQEs.
+            // idle_advance_active prevents spinning: cleared when the callback
+            // returns None/ZERO, reset when tasks are polled (which may register
+            // new timers, giving the callback something to advance to).
             #[cfg(feature = "virtual-clock")]
             let busy_poll = busy_poll
                 || (task_state.clock.is_some()
                     && (task_state.any_ready()
-                        || task_state
-                            .clock
-                            .as_ref()
-                            .is_some_and(|c| c.can_idle_advance())));
+                        || (idle_advance_active
+                            && task_state
+                                .clock
+                                .as_ref()
+                                .is_some_and(|c| c.has_idle_advance_fn()))));
 
             task_state = crate::runtime::submit_and_complete_io_all(task_state, busy_poll);
             task_state.prepare_cohort();
 
+            #[cfg(feature = "virtual-clock")]
+            let mut polled_any = false;
             while let Some(task) = task_state.get_ready() {
                 task_state = poll_task(task, task_state);
+                #[cfg(feature = "virtual-clock")]
+                {
+                    polled_any = true;
+                }
 
                 if let Some(poll_duration_ticks) = poll_duration_ticks {
                     // if we polled a task, then reset the cool down time.  Any I/O completion
@@ -411,29 +423,65 @@ impl Runtime {
                 }
             }
 
-            // When the runtime is idle (no tasks ready) and idle advances are
-            // available (explicit queue or default), apply the next one. This
-            // fires expired timers, waking tasks for the next loop iteration.
-            // Re-entrancy: release the TaskState borrow before waking so that
-            // woken futures can re-borrow TaskState via schedule_io.
+            // If tasks were polled, they may have registered new timers —
+            // the callback might have something to advance to now.
+            #[cfg(feature = "virtual-clock")]
+            if polled_any {
+                idle_advance_active = true;
+            }
+
+            // When the runtime is idle (no tasks ready) and an idle advance
+            // callback is installed, invoke it to determine how far to advance.
+            // Re-entrancy: extract callback, release TaskState borrow, invoke,
+            // re-borrow, restore callback, then advance and wake if needed.
             #[cfg(feature = "virtual-clock")]
             if !task_state.any_ready()
+                && idle_advance_active
                 && task_state
                     .clock
                     .as_ref()
-                    .is_some_and(|c| c.can_idle_advance())
+                    .is_some_and(|c| c.has_idle_advance_fn())
             {
-                let wakers = {
+                let (mut cb, now, next_deadline) = {
                     let clock = task_state.clock.as_mut().unwrap();
-                    let (_, wakers) = clock.take_next_idle_advance_or_default().unwrap();
-                    wakers
+                    let cb = clock.take_idle_advance_fn().unwrap();
+                    let now = clock.now();
+                    let next = clock.next_deadline();
+                    (cb, now, next)
                 };
                 let cell = task_state.into_inner();
-                for w in wakers {
-                    w.wake();
-                }
+                let advance_duration = cb(now, next_deadline);
                 task_state = cell.borrow_mut();
-                continue;
+
+                // Restore callback unless user code replaced/cleared it
+                // during invocation (dirty flag set by set_idle_advance_fn).
+                // If replaced, re-arm idle_advance_active so the new callback
+                // gets a chance to run on the next idle point.
+                // Guard: the callback may have called virtual_clock_enable(false),
+                // dropping the clock entirely. In that case, drop the old callback.
+                let was_replaced = if let Some(clock) = task_state.clock.as_mut() {
+                    clock.restore_idle_advance_fn(cb)
+                } else {
+                    drop(cb);
+                    false
+                };
+
+                if let Some(dur) = advance_duration.filter(|d| !d.is_zero()) {
+                    if let Some(clock) = task_state.clock.as_mut() {
+                        let (_, wakers) = clock.advance(dur);
+                        let cell = task_state.into_inner();
+                        for w in wakers {
+                            w.wake();
+                        }
+                        task_state = cell.borrow_mut();
+                    }
+                    idle_advance_active = true;
+                    continue;
+                }
+                // Callback returned None or Duration::ZERO — don't spin.
+                // But if the callback was replaced during invocation, the new
+                // callback should get a chance: re-arm so it runs next iteration.
+                idle_advance_active = was_replaced;
             }
         }
 

@@ -2120,12 +2120,21 @@ pub fn virtual_clock_pending_timers() -> usize {
         .pending_timers()
 }
 
-/// Queues a time advance to be applied when the runtime is idle.
+/// Installs a callback that controls virtual time advancement when the
+/// runtime is idle (no tasks ready to poll).
 ///
-/// Instead of manually polling a future, advancing, then awaiting, this
-/// schedules the advance to happen automatically the next time no tasks are
-/// ready to poll. Multiple calls queue in order — each advance waits for its
-/// own idle point, allowing newly woken tasks to run between advances.
+/// The callback receives `(current_virtual_time, next_pending_timer_deadline)`
+/// and returns how far to advance, or `None` to stop advancing and let the
+/// runtime block in io_uring normally.
+///
+/// Common patterns:
+/// - **Advance to next timer**: `|now, next| next.map(|d| d.saturating_duration_since(now))`
+/// - **Fixed duration**: `|_, _| Some(Duration::from_millis(1))`
+/// - **Conditional**: `move |_, _| if active.get() { Some(dur) } else { None }`
+///
+/// Only one callback is active at a time — calling this replaces any
+/// previously installed callback. Use [`virtual_clock_clear_idle_advance`]
+/// to remove the callback entirely.
 ///
 /// # Panics
 ///
@@ -2140,84 +2149,59 @@ pub fn virtual_clock_pending_timers() -> usize {
 /// # async fn example() {
 /// operations::virtual_clock_enable(true);
 ///
-/// // Queue two advances — they fire at successive idle points
-/// operations::virtual_clock_advance_idle(Duration::from_secs(30));
-/// operations::virtual_clock_advance_idle(Duration::from_secs(30));
+/// // Advance to the next timer on every idle point
+/// operations::virtual_clock_set_idle_advance(|now, next| {
+///     next.map(|deadline| deadline.saturating_duration_since(now))
+/// });
 ///
-/// // Start a sleep — when the task yields, the first idle advance fires
-/// operations::sleep(Duration::from_secs(30)).await.unwrap();
-///
-/// // After the first sleep completes and the task yields again,
-/// // the second idle advance fires
-/// operations::sleep(Duration::from_secs(30)).await.unwrap();
+/// // Sleeps resolve automatically
+/// operations::sleep(Duration::from_secs(60)).await.unwrap();
 /// # }
 /// ```
 #[cfg(feature = "virtual-clock")]
-pub fn virtual_clock_advance_idle(duration: std::time::Duration) {
+pub fn virtual_clock_set_idle_advance(
+    f: impl FnMut(std::time::Instant, Option<std::time::Instant>) -> Option<std::time::Duration>
+    + 'static,
+) {
     TaskState::get()
         .clock
         .as_mut()
         .expect("virtual clock not enabled; call virtual_clock_enable(true) first")
-        .queue_idle_advance(duration);
+        .set_idle_advance_fn(Some(Box::new(f)));
 }
 
-/// Returns the number of queued idle advances.
+/// Removes the idle advance callback, stopping automatic time advancement
+/// when the runtime is idle.
+///
+/// After clearing, the runtime will block in io_uring when no tasks are
+/// ready, just as it would without a virtual clock. Explicit advancement
+/// via [`virtual_clock_advance`] and [`virtual_clock_advance_to`] is
+/// unaffected.
 ///
 /// # Panics
 ///
 /// Panics if the virtual clock is not enabled.
 #[cfg(feature = "virtual-clock")]
-pub fn virtual_clock_pending_idle_advances() -> usize {
+pub fn virtual_clock_clear_idle_advance() {
+    TaskState::get()
+        .clock
+        .as_mut()
+        .expect("virtual clock not enabled; call virtual_clock_enable(true) first")
+        .set_idle_advance_fn(None);
+}
+
+/// Returns `true` if an idle advance callback is currently installed.
+///
+/// # Panics
+///
+/// Panics if the virtual clock is not enabled.
+#[cfg(feature = "virtual-clock")]
+pub fn virtual_clock_has_idle_advance() -> bool {
     TaskState::get()
         .clock
         .as_ref()
         .expect("virtual clock not enabled; call virtual_clock_enable(true) first")
-        .pending_idle_advances()
-}
-
-/// Sets the default idle advance duration.
-///
-/// When the runtime is idle and no explicit idle advances (from
-/// [`virtual_clock_advance_idle`]) are queued, this default is used
-/// instead — the clock advances by `duration` on every idle point
-/// until the default is cleared.
-///
-/// Pass `None` (or `Some(Duration::ZERO)`) to clear the default.
-///
-/// This is useful for tests that don't know how many time-steps they
-/// need upfront — set a default like 1ms and let the runtime advance
-/// automatically whenever it has nothing else to do.
-///
-/// # Panics
-///
-/// Panics if the virtual clock is not enabled.
-///
-/// # Examples
-///
-/// ```rust,no_run
-/// use std::time::Duration;
-/// use kimojio::operations;
-///
-/// # async fn example() {
-/// operations::virtual_clock_enable(true);
-///
-/// // Advance by 1ms on every idle point
-/// operations::virtual_clock_advance_idle_default(Some(Duration::from_millis(1)));
-///
-/// // Sleeps resolve automatically without pre-queuing advances
-/// operations::sleep(Duration::from_secs(60)).await.unwrap();
-///
-/// // Clear the default
-/// operations::virtual_clock_advance_idle_default(None);
-/// # }
-/// ```
-#[cfg(feature = "virtual-clock")]
-pub fn virtual_clock_advance_idle_default(duration: Option<std::time::Duration>) {
-    TaskState::get()
-        .clock
-        .as_mut()
-        .expect("virtual clock not enabled; call virtual_clock_enable(true) first")
-        .set_idle_advance_default(duration);
+        .has_idle_advance_fn()
 }
 
 #[cfg(test)]
@@ -3229,33 +3213,38 @@ mod test {
             });
         }
 
-        // --- Idle advance tests ---
+        // --- Idle advance callback tests ---
 
         #[test]
-        fn idle_advance_completes_sleep() {
+        fn callback_completes_sleep() {
             run_virtual(async {
-                operations::virtual_clock_advance_idle(Duration::from_secs(60));
+                operations::virtual_clock_set_idle_advance(|now, next| {
+                    next.map(|d| d.saturating_duration_since(now))
+                });
                 operations::sleep(Duration::from_secs(60)).await.unwrap();
             });
         }
 
         #[test]
-        fn idle_advance_60s_completes_fast() {
+        fn callback_60s_completes_fast() {
             let wall_start = std::time::Instant::now();
             run_virtual(async {
-                operations::virtual_clock_advance_idle(Duration::from_secs(60));
+                operations::virtual_clock_set_idle_advance(|now, next| {
+                    next.map(|d| d.saturating_duration_since(now))
+                });
                 operations::sleep(Duration::from_secs(60)).await.unwrap();
             });
             assert!(wall_start.elapsed() < Duration::from_secs(1));
         }
 
         #[test]
-        fn multiple_idle_advances_fire_in_sequence() {
+        fn callback_fires_timers_in_sequence() {
             run_virtual(async {
                 let epoch = operations::virtual_clock_epoch();
 
-                operations::virtual_clock_advance_idle(Duration::from_secs(10));
-                operations::virtual_clock_advance_idle(Duration::from_secs(20));
+                operations::virtual_clock_set_idle_advance(|now, next| {
+                    next.map(|d| d.saturating_duration_since(now))
+                });
 
                 operations::sleep(Duration::from_secs(10)).await.unwrap();
                 assert_eq!(
@@ -3272,72 +3261,65 @@ mod test {
         }
 
         #[test]
-        fn idle_advance_spawned_task() {
+        fn callback_wakes_spawned_task() {
             run_virtual(async {
                 let done = Rc::new(Cell::new(false));
                 let d = done.clone();
 
-                operations::virtual_clock_advance_idle(Duration::from_secs(60));
+                operations::virtual_clock_set_idle_advance(|now, next| {
+                    next.map(|d| d.saturating_duration_since(now))
+                });
 
                 operations::spawn_task(async move {
                     operations::sleep(Duration::from_secs(60)).await.unwrap();
                     d.set(true);
                 });
 
-                // Main task sleeps too — both tasks are pending → runtime is idle →
-                // idle advance fires → both 60s timers wake → spawned task completes.
                 operations::sleep(Duration::from_secs(60)).await.unwrap();
-                // Yield to let spawned task (woken by same advance) complete
                 operations::yield_io().await;
 
                 assert!(done.get());
             });
         }
 
-        // --- Idle advance default tests ---
-
         #[test]
-        fn idle_advance_default_completes_sleep() {
+        fn fixed_callback_completes_sleep() {
             let wall_start = std::time::Instant::now();
             run_virtual(async {
-                operations::virtual_clock_advance_idle_default(Some(Duration::from_millis(1)));
+                operations::virtual_clock_set_idle_advance(|_, _| Some(Duration::from_millis(1)));
                 operations::sleep(Duration::from_secs(60)).await.unwrap();
             });
             assert!(wall_start.elapsed() < Duration::from_secs(1));
         }
 
         #[test]
-        fn idle_advance_default_none_is_noop() {
+        fn no_callback_is_noop() {
             run_virtual(async {
-                // Setting None or zero should not cause any advancement
-                operations::virtual_clock_advance_idle_default(None);
-                operations::virtual_clock_advance_idle_default(Some(Duration::ZERO));
-
+                // No callback installed — clock should not advance
                 let epoch = operations::virtual_clock_epoch();
-                // No advancement should happen — clock stays at epoch
                 assert_eq!(operations::virtual_clock_now(), epoch);
+                assert!(!operations::virtual_clock_has_idle_advance());
             });
         }
 
         #[test]
-        fn queue_drains_before_default() {
+        fn replace_callback_changes_behavior() {
             run_virtual(async {
                 let epoch = operations::virtual_clock_epoch();
 
-                // Queue a 60s advance, set 1ms default
-                operations::virtual_clock_advance_idle(Duration::from_secs(60));
-                operations::virtual_clock_advance_idle_default(Some(Duration::from_millis(1)));
-
-                // First sleep uses the queued 60s advance
+                // Install advance-to-next callback
+                operations::virtual_clock_set_idle_advance(|now, next| {
+                    next.map(|d| d.saturating_duration_since(now))
+                });
                 operations::sleep(Duration::from_secs(60)).await.unwrap();
                 assert_eq!(
                     operations::virtual_clock_now().duration_since(epoch),
                     Duration::from_secs(60)
                 );
 
-                // Second sleep uses 1ms default (many iterations)
+                // Replace with fixed 1ms callback
+                operations::virtual_clock_set_idle_advance(|_, _| Some(Duration::from_millis(1)));
                 operations::sleep(Duration::from_millis(10)).await.unwrap();
-                // Clock advanced at least 10ms past the 60s mark
                 assert!(
                     operations::virtual_clock_now().duration_since(epoch)
                         >= Duration::from_secs(60) + Duration::from_millis(10)

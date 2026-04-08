@@ -55,9 +55,9 @@ enabled, behavior does not change until `virtual_clock_enable(true)` is called.
 | `virtual_clock_epoch()` | Start time of the virtual clock |
 | `virtual_clock_next_deadline()` | Peek at the next pending timer deadline |
 | `virtual_clock_pending_timers()` | Count of pending timers |
-| `virtual_clock_advance_idle(duration)` | Queue an advance that fires at the next idle point |
-| `virtual_clock_pending_idle_advances()` | Count of queued idle advances |
-| `virtual_clock_advance_idle_default(Option<Duration>)` | Set/clear default idle advance duration |
+| `virtual_clock_set_idle_advance(callback)` | Install a callback for automatic time advancement when idle |
+| `virtual_clock_clear_idle_advance()` | Remove the idle advance callback |
+| `virtual_clock_has_idle_advance()` | Check if an idle advance callback is installed |
 
 ### Test utilities
 
@@ -145,10 +145,12 @@ fn retry_logic_test() {
     runtime.block_on(async {
         operations::virtual_clock_enable(true);
 
-        // Queue an idle advance — fires when no tasks are ready
-        operations::virtual_clock_advance_idle(Duration::from_secs(60));
+        // Install an idle advance callback — advances to the next timer on idle
+        operations::virtual_clock_set_idle_advance(|now, next| {
+            next.map(|d| d.saturating_duration_since(now))
+        });
 
-        // Sleep completes instantly via the idle advance
+        // Sleep completes instantly via the idle advance callback
         operations::sleep(Duration::from_secs(60)).await.unwrap();
     });
 }
@@ -257,34 +259,36 @@ A future auto-advance mode is planned to simplify testing of code with
 internal sleeps. See `docs/virtual-clock-auto-advance-future.md` for the
 design.
 
-### Idle advance
+### Idle advance callback
 
-For tests where you know how many time-steps are needed, you can queue
-advances that fire automatically when the runtime has no ready tasks:
+Instead of manually advancing time before each sleep, you can install a
+callback that runs whenever the runtime is idle (no tasks ready to poll).
+The callback receives the current virtual time and the next pending timer
+deadline, and returns how far to advance — or `None` to block normally.
+
+The most common pattern is "advance to the next timer":
 
 ```rust
 use kimojio::operations;
 use std::time::Duration;
 
 # async fn example() {
-// Queue two successive 30-second advances
-operations::virtual_clock_advance_idle(Duration::from_secs(30));
-operations::virtual_clock_advance_idle(Duration::from_secs(30));
+// Advance to the next timer deadline on every idle point
+operations::virtual_clock_set_idle_advance(|now, next| {
+    next.map(|deadline| deadline.saturating_duration_since(now))
+});
 
-// First sleep completes when the first idle advance fires
+// Sleeps complete instantly — the callback advances to each deadline
 operations::sleep(Duration::from_secs(30)).await.unwrap();
-
-// Second sleep completes when the second idle advance fires
 operations::sleep(Duration::from_secs(30)).await.unwrap();
 # }
 ```
 
-Each advance waits for its own idle point — after the first advance fires,
-newly woken tasks are polled to completion before the next advance fires.
-This makes idle advance safe for multi-step test scenarios.
+Each callback invocation handles one idle point. After the callback fires and
+wakes timers, newly woken tasks are polled to completion before the callback
+is invoked again. This makes it safe for multi-step test scenarios.
 
-For tests that don't know how many time-steps they need, set a default
-instead of pre-queuing individual advances:
+For a fixed-duration advance (equivalent to the former default behavior):
 
 ```rust
 use kimojio::operations;
@@ -292,18 +296,19 @@ use std::time::Duration;
 
 # async fn example() {
 // Advance by 1ms on every idle point — sleeps resolve automatically
-operations::virtual_clock_advance_idle_default(Some(Duration::from_millis(1)));
+operations::virtual_clock_set_idle_advance(|_, _| Some(Duration::from_millis(1)));
 
 operations::sleep(Duration::from_secs(60)).await.unwrap();
 
-// Clear the default when done
-operations::virtual_clock_advance_idle_default(None);
+// Clear the callback when done
+operations::virtual_clock_clear_idle_advance();
 # }
 ```
 
-Explicit queue entries (from `virtual_clock_advance_idle`) are consumed
-first; the default only fires when the queue is empty. Pass `None` or
-`Some(Duration::ZERO)` to clear the default.
+The callback can capture mutable state for dynamic strategies — countdowns,
+conditional advancement, or variable-duration steps. If the callback returns
+`None`, the runtime blocks in io_uring normally. If it returns
+`Some(Duration::ZERO)`, the runtime treats it as no-advance and does not spin.
 
 ### Real I/O deadlines
 

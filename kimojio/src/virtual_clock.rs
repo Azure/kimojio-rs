@@ -9,9 +9,12 @@
 //! [`virtual_clock_advance`](crate::operations::virtual_clock_advance), etc.
 
 use std::cmp::Ordering;
-use std::collections::{BinaryHeap, VecDeque};
+use std::collections::BinaryHeap;
 use std::task::Waker;
 use std::time::{Duration, Instant};
+
+/// Type alias for the idle advance callback.
+type IdleAdvanceFn = dyn FnMut(Instant, Option<Instant>) -> Option<Duration>;
 
 /// Opaque identifier for a registered virtual timer.
 ///
@@ -50,8 +53,8 @@ pub(crate) struct VirtualClockState {
     current: Instant,
     timers: BinaryHeap<VirtualTimer>,
     next_timer_id: u64,
-    idle_advances: VecDeque<Duration>,
-    idle_advance_default: Option<Duration>,
+    idle_advance_fn: Option<Box<IdleAdvanceFn>>,
+    idle_advance_dirty: bool,
 }
 
 struct VirtualTimer {
@@ -93,8 +96,8 @@ impl VirtualClockState {
             current: start,
             timers: BinaryHeap::new(),
             next_timer_id: 1,
-            idle_advances: VecDeque::new(),
-            idle_advance_default: None,
+            idle_advance_fn: None,
+            idle_advance_dirty: false,
         }
     }
 
@@ -185,70 +188,45 @@ impl VirtualClockState {
         self.timers.retain(|t| t.id != id);
     }
 
-    /// Queues a time advance to be applied at the next runtime idle point.
+    /// Installs or replaces the idle advance callback.
     ///
-    /// The advance fires when no tasks are ready to poll. Multiple calls
-    /// queue in order — each advance waits for its own idle point, allowing
-    /// newly woken tasks to run between advances.
-    pub(crate) fn queue_idle_advance(&mut self, duration: Duration) {
-        self.idle_advances.push_back(duration);
-    }
-
-    /// Returns `true` if there are queued idle advances.
-    #[cfg(test)]
-    pub fn has_idle_advances(&self) -> bool {
-        !self.idle_advances.is_empty()
-    }
-
-    /// Pops and applies the next queued idle advance.
+    /// When installed, the runtime calls this callback at each idle point with
+    /// `(current_virtual_time, next_pending_timer_deadline)`. If it returns
+    /// `Some(duration)`, virtual time advances by that amount. If `None`,
+    /// the runtime blocks in io_uring normally.
     ///
-    /// Returns the count and wakers from the advance, or `None` if no advances
-    /// are queued.
-    #[cfg(test)]
-    pub fn take_next_idle_advance(&mut self) -> Option<(usize, Vec<Waker>)> {
-        let duration = self.idle_advances.pop_front()?;
-        Some(self.advance(duration))
+    /// Pass `None` to clear any installed callback.
+    pub(crate) fn set_idle_advance_fn(&mut self, f: Option<Box<IdleAdvanceFn>>) {
+        self.idle_advance_fn = f;
+        self.idle_advance_dirty = true;
     }
 
-    /// Returns the number of queued idle advances.
-    pub(crate) fn pending_idle_advances(&self) -> usize {
-        self.idle_advances.len()
+    /// Returns `true` if an idle advance callback is installed.
+    pub(crate) fn has_idle_advance_fn(&self) -> bool {
+        self.idle_advance_fn.is_some()
     }
 
-    /// Sets the default idle advance duration.
+    /// Extracts the idle advance callback for external invocation.
     ///
-    /// When the runtime is idle and no explicit idle advances are queued,
-    /// this default is used instead. `None` disables the default (the
-    /// clock won't advance on idle). `Some(Duration::ZERO)` is treated
-    /// as equivalent to `None`.
-    pub(crate) fn set_idle_advance_default(&mut self, duration: Option<Duration>) {
-        self.idle_advance_default = duration.filter(|d| !d.is_zero());
+    /// Resets the dirty flag so `restore_idle_advance_fn` can detect
+    /// whether user code replaced or cleared the callback during invocation.
+    pub(crate) fn take_idle_advance_fn(&mut self) -> Option<Box<IdleAdvanceFn>> {
+        self.idle_advance_dirty = false;
+        self.idle_advance_fn.take()
     }
 
-    /// Returns the current default idle advance duration.
-    #[cfg(test)]
-    pub fn idle_advance_default(&self) -> Option<Duration> {
-        self.idle_advance_default
-    }
-
-    /// Returns `true` if idle advancement can occur — either from
-    /// the explicit queue or from a configured default.
-    pub(crate) fn can_idle_advance(&self) -> bool {
-        !self.idle_advances.is_empty() || self.idle_advance_default.is_some()
-    }
-
-    /// Pops the next idle advance from the queue, falling back to the
-    /// default if the queue is empty. Returns `None` only when both
-    /// are absent.
-    ///
-    /// Returns the count and wakers; caller must release `TaskState` borrow
-    /// before calling `waker.wake()`.
-    pub(crate) fn take_next_idle_advance_or_default(&mut self) -> Option<(usize, Vec<Waker>)> {
-        let duration = self
-            .idle_advances
-            .pop_front()
-            .or(self.idle_advance_default)?;
-        Some(self.advance(duration))
+    /// Restores the callback after invocation, unless user code touched
+    /// the field during invocation (dirty flag set by `set_idle_advance_fn`).
+    /// Returns `true` if the callback was replaced or cleared during invocation
+    /// (dirty), so the caller can re-arm idle advancement for the new callback.
+    pub(crate) fn restore_idle_advance_fn(&mut self, f: Box<IdleAdvanceFn>) -> bool {
+        if !self.idle_advance_dirty {
+            self.idle_advance_fn = Some(f);
+            false
+        } else {
+            // User code called set/clear during invocation — drop the old callback.
+            true
+        }
     }
 }
 
@@ -604,129 +582,90 @@ mod tests {
         assert_eq!(counter.0.load(AtomicOrdering::SeqCst), 1);
     }
 
-    // ── Idle advance queue tests ─────────────────────────────
+    // ── Idle advance callback tests ─────────────────────────────
 
     #[test]
-    fn queue_idle_advance_enqueues() {
-        let mut state = VirtualClockState::new(Instant::now());
-        assert_eq!(state.pending_idle_advances(), 0);
-        assert!(!state.has_idle_advances());
-
-        state.queue_idle_advance(Duration::from_secs(10));
-        assert_eq!(state.pending_idle_advances(), 1);
-        assert!(state.has_idle_advances());
-
-        state.queue_idle_advance(Duration::from_secs(20));
-        assert_eq!(state.pending_idle_advances(), 2);
-    }
-
-    #[test]
-    fn take_next_idle_advance_applies_in_order() {
-        let start = Instant::now();
-        let mut state = VirtualClockState::new(start);
-        let (waker, counter) = counting_waker();
-
-        state.register_timer(start + Duration::from_secs(10), waker);
-        state.queue_idle_advance(Duration::from_secs(5));
-        state.queue_idle_advance(Duration::from_secs(10));
-
-        // First advance: 5s — timer not yet expired
-        let result = state.take_next_idle_advance();
-        let (fired, wakers) = result.unwrap();
-        assert_eq!(fired, 0);
-        assert!(wakers.is_empty());
-        assert_eq!(state.now(), start + Duration::from_secs(5));
-        assert_eq!(counter.0.load(AtomicOrdering::SeqCst), 0);
-
-        // Second advance: +10s = 15s total — timer fires
-        let result = state.take_next_idle_advance();
-        let (fired, wakers) = result.unwrap();
-        assert_eq!(fired, 1);
-        for w in wakers {
-            w.wake();
-        }
-        assert_eq!(state.now(), start + Duration::from_secs(15));
-        assert_eq!(counter.0.load(AtomicOrdering::SeqCst), 1);
-
-        // No more advances
-        assert!(state.take_next_idle_advance().is_none());
-        assert!(!state.has_idle_advances());
-    }
-
-    #[test]
-    fn take_next_idle_advance_returns_none_when_empty() {
-        let mut state = VirtualClockState::new(Instant::now());
-        assert!(state.take_next_idle_advance().is_none());
-    }
-
-    // ── Idle advance default tests ───────────────────────────
-
-    #[test]
-    fn idle_advance_default_none_by_default() {
+    fn idle_advance_fn_none_by_default() {
         let state = VirtualClockState::new(Instant::now());
-        assert_eq!(state.idle_advance_default(), None);
-        assert!(!state.can_idle_advance());
+        assert!(!state.has_idle_advance_fn());
     }
 
     #[test]
-    fn set_idle_advance_default() {
+    fn set_idle_advance_fn_stores() {
         let mut state = VirtualClockState::new(Instant::now());
-        state.set_idle_advance_default(Some(Duration::from_millis(1)));
-        assert_eq!(state.idle_advance_default(), Some(Duration::from_millis(1)));
-        assert!(state.can_idle_advance());
-
-        // Clear
-        state.set_idle_advance_default(None);
-        assert_eq!(state.idle_advance_default(), None);
-        assert!(!state.can_idle_advance());
+        state.set_idle_advance_fn(Some(Box::new(|_, _| Some(Duration::from_secs(1)))));
+        assert!(state.has_idle_advance_fn());
     }
 
     #[test]
-    fn zero_duration_default_treated_as_none() {
+    fn set_and_clear_idle_advance_fn() {
         let mut state = VirtualClockState::new(Instant::now());
-        state.set_idle_advance_default(Some(Duration::ZERO));
-        assert_eq!(state.idle_advance_default(), None);
-        assert!(!state.can_idle_advance());
+        state.set_idle_advance_fn(Some(Box::new(|_, _| Some(Duration::from_secs(1)))));
+        assert!(state.has_idle_advance_fn());
+
+        state.set_idle_advance_fn(None);
+        assert!(!state.has_idle_advance_fn());
     }
 
     #[test]
-    fn take_next_uses_default_when_queue_empty() {
+    fn take_idle_advance_fn_returns_none_when_empty() {
+        let mut state = VirtualClockState::new(Instant::now());
+        assert!(state.take_idle_advance_fn().is_none());
+    }
+
+    #[test]
+    fn take_idle_advance_fn_extracts_callback() {
+        let mut state = VirtualClockState::new(Instant::now());
+        state.set_idle_advance_fn(Some(Box::new(|_, _| Some(Duration::from_secs(1)))));
+        let cb = state.take_idle_advance_fn();
+        assert!(cb.is_some());
+        assert!(!state.has_idle_advance_fn());
+    }
+
+    #[test]
+    fn restore_idle_advance_fn_puts_back_when_clean() {
+        let mut state = VirtualClockState::new(Instant::now());
+        state.set_idle_advance_fn(Some(Box::new(|_, _| Some(Duration::from_secs(1)))));
+        let cb = state.take_idle_advance_fn().unwrap();
+        // dirty flag was reset by take
+        assert!(!state.has_idle_advance_fn());
+        let was_replaced = state.restore_idle_advance_fn(cb);
+        assert!(!was_replaced);
+        assert!(state.has_idle_advance_fn());
+    }
+
+    #[test]
+    fn restore_idle_advance_fn_drops_when_dirty() {
+        let mut state = VirtualClockState::new(Instant::now());
+        state.set_idle_advance_fn(Some(Box::new(|_, _| Some(Duration::from_secs(1)))));
+        let cb = state.take_idle_advance_fn().unwrap();
+        // Simulate user code calling set during invocation
+        state.set_idle_advance_fn(None);
+        // dirty flag is now set — restore should NOT put back the old callback
+        let was_replaced = state.restore_idle_advance_fn(cb);
+        assert!(was_replaced);
+        assert!(!state.has_idle_advance_fn());
+    }
+
+    #[test]
+    fn callback_invoked_with_correct_params() {
         let start = Instant::now();
         let mut state = VirtualClockState::new(start);
-        state.set_idle_advance_default(Some(Duration::from_secs(5)));
+        let (waker, _) = counting_waker();
+        let deadline = start + Duration::from_secs(10);
+        state.register_timer(deadline, waker);
 
-        let (fired, wakers) = state.take_next_idle_advance_or_default().unwrap();
-        assert_eq!(fired, 0);
-        assert!(wakers.is_empty());
-        assert_eq!(state.now(), start + Duration::from_secs(5));
+        state.set_idle_advance_fn(Some(Box::new(|now, next| {
+            next.map(|d| d.saturating_duration_since(now))
+        })));
 
-        // Default persists — calling again advances further
-        let (fired, wakers) = state.take_next_idle_advance_or_default().unwrap();
-        assert_eq!(fired, 0);
-        assert!(wakers.is_empty());
-        assert_eq!(state.now(), start + Duration::from_secs(10));
-    }
+        let mut cb = state.take_idle_advance_fn().unwrap();
+        let now = state.now();
+        let next = state.next_deadline();
+        let result = cb(now, next);
 
-    #[test]
-    fn queue_takes_priority_over_default() {
-        let start = Instant::now();
-        let mut state = VirtualClockState::new(start);
-        state.set_idle_advance_default(Some(Duration::from_millis(1)));
-        state.queue_idle_advance(Duration::from_secs(60));
-
-        // Queue entry (60s) takes priority over default (1ms)
-        let (fired, wakers) = state.take_next_idle_advance_or_default().unwrap();
-        assert_eq!(fired, 0);
-        assert!(wakers.is_empty());
-        assert_eq!(state.now(), start + Duration::from_secs(60));
-
-        // Queue is now empty — falls back to default (1ms)
-        let (fired, wakers) = state.take_next_idle_advance_or_default().unwrap();
-        assert_eq!(fired, 0);
-        assert!(wakers.is_empty());
-        assert_eq!(
-            state.now(),
-            start + Duration::from_secs(60) + Duration::from_millis(1)
-        );
+        assert_eq!(now, start);
+        assert_eq!(next, Some(deadline));
+        assert_eq!(result, Some(Duration::from_secs(10)));
     }
 }

@@ -67,11 +67,11 @@ async fn retry_backoff_with_virtual_clock() {
     operations::virtual_clock_enable(true);
     let epoch = operations::virtual_clock_epoch();
 
-    // Queue enough idle advances for each retry's sleep.
-    // With 3 failures: delays are 1s, 2s, 4s (then success on 4th call).
-    operations::virtual_clock_advance_idle(Duration::from_secs(1));
-    operations::virtual_clock_advance_idle(Duration::from_secs(2));
-    operations::virtual_clock_advance_idle(Duration::from_secs(4));
+    // Install an advance-to-next-timer callback — each retry sleep
+    // completes instantly when the runtime is idle.
+    operations::virtual_clock_set_idle_advance(|now, next| {
+        next.map(|d| d.saturating_duration_since(now))
+    });
 
     let service = FlakyService::new(3);
     let result = retry_with_backoff(|| service.call(), 5, Duration::from_secs(1)).await;

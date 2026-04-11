@@ -83,13 +83,10 @@ Internal methods on `VirtualClockState`:
 | `cancel_timer(id)` | Cancel a previously registered timer |
 | `next_deadline()` | Peek at the earliest pending timer deadline |
 | `pending_timers()` | Count of pending timers |
-| `queue_idle_advance(duration)` | Queue an advance that fires when the runtime is idle |
-| `has_idle_advances()` | Whether any idle advances are queued (test-only) |
-| `take_next_idle_advance()` | Pop and advance (test-only) |
-| `pending_idle_advances()` | Count of queued idle advances |
-| `set_idle_advance_default(Option<Duration>)` | Set/clear default idle advance duration |
-| `can_idle_advance()` | Whether idle advance is possible (queue or default) |
-| `take_next_idle_advance_or_default()` | Pop queue or use default, return `(count, Vec<Waker>)` |
+| `set_idle_advance_fn(Option<Box<IdleAdvanceFn>>)` | Install or clear the idle advance callback |
+| `has_idle_advance_fn()` | Whether an idle advance callback is installed |
+| `take_idle_advance_fn()` | Extract callback for invocation (resets dirty flag) |
+| `restore_idle_advance_fn(Box<IdleAdvanceFn>)` | Restore callback after invocation (checks dirty flag) |
 
 ### Re-entrancy Safety
 
@@ -131,9 +128,12 @@ thread-local runtime state struct. This is accessed by:
 4. **`VirtualSleepFuture::poll()`** — Accesses the clock via `TaskState::get()`
    to read current time and register/cancel timers.
 5. **Runtime loop** — After all ready tasks are polled, if no tasks remain
-   ready and idle advances are queued, the runtime pops the next advance,
-   releases the `TaskStateCellRef` borrow (via `into_inner()`), wakes the
-   returned wakers, re-borrows, and continues the event loop.
+   ready and an idle advance callback is installed, the runtime extracts
+   the callback (via `Option::take()`), releases the `TaskStateCellRef`
+   borrow (via `into_inner()`), invokes the callback with `(now, next_deadline)`,
+   re-borrows, conditionally restores the callback (checking a dirty flag for
+   self-replacement), and if the callback returned a non-zero duration, advances
+   the clock and wakes expired timers.
 
 The `Option` ensures zero overhead when no virtual clock is installed
 (the common case in production).

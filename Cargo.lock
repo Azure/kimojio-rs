@@ -241,17 +241,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b05b61dc5112cbb17e4b6cd61790d9845d13888356391624cbe7e41efeac1e75"
 
 [[package]]
-name = "copyfile"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "futures",
- "kimojio",
- "rustix",
-]
-
-[[package]]
 name = "criterion"
 version = "0.8.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -350,6 +339,18 @@ checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "examples"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "futures",
+ "kimojio",
+ "openssl",
+ "rustix",
 ]
 
 [[package]]
@@ -917,13 +918,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
 
 [[package]]
-name = "retry-backoff"
-version = "0.1.0"
-dependencies = [
- "kimojio",
-]
-
-[[package]]
 name = "ring"
 version = "0.17.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1169,17 +1163,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tls-echo-server"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "kimojio",
- "openssl",
- "rustix",
-]
-
-[[package]]
 name = "unicode-ident"
 version = "1.0.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1219,14 +1202,6 @@ name = "vcpkg"
 version = "0.2.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
-
-[[package]]
-name = "virtual-time"
-version = "0.1.0"
-dependencies = [
- "futures",
- "kimojio",
-]
 
 [[package]]
 name = "walkdir"

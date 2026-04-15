@@ -115,5 +115,5 @@ async fn retry_backoff_manual_advance() {
 
 fn main() {
     // This example is test-only; the main function is a placeholder.
-    println!("Run with: cargo test -p retry-backoff --all-features");
+    println!("Run with: cargo test -p examples --bin retry-backoff --features virtual-clock");
 }

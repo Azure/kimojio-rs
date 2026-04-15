@@ -13,11 +13,11 @@
 //! configuration of block size, number of blocks, in-flight I/O count, and
 //! whether to use polled I/O mode.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::{Parser, ValueEnum};
-use futures::stream::FuturesUnordered;
 use futures::StreamExt;
-use kimojio::operations::{self, io_scope, io_scope_drain_futures, OFlags};
+use futures::stream::FuturesUnordered;
+use kimojio::operations::{self, OFlags, io_scope, io_scope_drain_futures};
 use rustix::fs::Mode;
 use std::path::PathBuf;
 use std::pin::Pin;

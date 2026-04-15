@@ -1,7 +1,0 @@
-[package]
-name = "retry-backoff"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]
-kimojio = { path = "../../kimojio", features = ["virtual-clock"] }

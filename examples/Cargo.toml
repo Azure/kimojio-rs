@@ -1,0 +1,36 @@
+[package]
+name = "examples"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[features]
+tls = ["kimojio/tls", "dep:openssl"]
+virtual-clock = ["kimojio/virtual-clock"]
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+futures.workspace = true
+kimojio.workspace = true
+openssl = { workspace = true, optional = true }
+rustix.workspace = true
+
+[[bin]]
+name = "copyfile"
+path = "src/bin/copyfile.rs"
+
+[[bin]]
+name = "retry-backoff"
+path = "src/bin/retry_backoff.rs"
+required-features = ["virtual-clock"]
+
+[[bin]]
+name = "tls-echo-server"
+path = "src/bin/tls_echo_server.rs"
+required-features = ["tls"]
+
+[[bin]]
+name = "virtual-time"
+path = "src/bin/virtual_time.rs"
+required-features = ["virtual-clock"]

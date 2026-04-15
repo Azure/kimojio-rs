@@ -1,9 +1,0 @@
-[package]
-name = "virtual-time"
-version = "0.1.0"
-edition = "2021"
-description = "Example demonstrating kimojio's virtual clock for deterministic timing tests"
-
-[dependencies]
-kimojio = { path = "../../kimojio", features = ["virtual-clock"] }
-futures = "0.3"

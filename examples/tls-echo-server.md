@@ -15,7 +15,7 @@ Build the example from the workspace root:
 
 ```bash
 cd /workspace/kimojio-rs
-cargo build --release --package tls-echo-server
+cargo build --release -p examples --bin tls-echo-server --features tls
 ```
 
 The binary will be located at:
@@ -25,7 +25,7 @@ target/x86_64-unknown-linux-gnu/release/tls-echo-server
 
 Or you can run it directly with:
 ```bash
-cargo run --release --package tls-echo-server -- --help
+cargo run --release -p examples --bin tls-echo-server --features tls -- --help
 ```
 
 ## Creating Self-Signed Certificates
@@ -99,7 +99,7 @@ This will create a `certs/` directory with all necessary certificate and key fil
 Run the TLS echo server with the generated certificates:
 
 ```bash
-cargo run --release --package tls-echo-server -- \
+cargo run --release -p examples --bin tls-echo-server --features tls -- \
     --cert certs/server.crt \
     --key certs/server.key \
     --ca-cert certs/ca.crt \
@@ -127,7 +127,7 @@ Options:
 ### Example with default port
 
 ```bash
-cargo run --release --package tls-echo-server -- \
+cargo run --release -p examples --bin tls-echo-server --features tls -- \
     -c certs/server.crt \
     -k certs/server.key \
     --ca-cert certs/ca.crt
@@ -271,7 +271,7 @@ If you see TLS handshake errors, ensure:
 
 If port 8443 is already in use, specify a different port:
 ```bash
-cargo run --release --package tls-echo-server -- \
+cargo run --release -p examples --bin tls-echo-server --features tls -- \
     --cert certs/server.crt \
     --key certs/server.key \
     --ca-cert certs/ca.crt \

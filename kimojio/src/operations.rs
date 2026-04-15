@@ -1037,7 +1037,7 @@ pub struct SetYieldCpuFuture {
 impl Future for SetYieldCpuFuture {
     type Output = ();
 
-    fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut task_state = TaskState::get();
         let current_task = task_state.get_current_task();
         let current_task_state = current_task.get_state();
@@ -1050,12 +1050,18 @@ impl Future for SetYieldCpuFuture {
         match self.state {
             YieldFutureState::CreatedIo => {
                 task_state.schedule_io(current_task);
+                drop(task_state);
                 self.get_mut().state = YieldFutureState::Polled;
+                // Wake the context waker so that callers like FuturesUnordered
+                // know to re-poll this future when the task is next scheduled.
+                cx.waker().wake_by_ref();
                 Poll::Pending
             }
             YieldFutureState::CreatedCpu => {
                 task_state.schedule_cpu(current_task);
+                drop(task_state);
                 self.get_mut().state = YieldFutureState::Polled;
+                cx.waker().wake_by_ref();
                 Poll::Pending
             }
             YieldFutureState::Polled => {
@@ -2282,6 +2288,52 @@ mod test {
         crate::run_test_with_post_validate(operations::yield_io(), |stats| {
             assert!(stats.tasks_polled_io.get() > 0);
         });
+    }
+
+    #[crate::test]
+    async fn yield_io_in_futures_unordered() {
+        use std::pin::Pin;
+        type BoxFut = Pin<Box<dyn std::future::Future<Output = i32>>>;
+
+        let mut futs: FuturesUnordered<BoxFut> = FuturesUnordered::new();
+        futs.push(Box::pin(async {
+            operations::yield_io().await;
+            1
+        }));
+        futs.push(Box::pin(async {
+            operations::yield_io().await;
+            2
+        }));
+
+        let mut results = Vec::new();
+        while let Some(val) = futs.next().await {
+            results.push(val);
+        }
+        results.sort();
+        assert_eq!(results, vec![1, 2]);
+    }
+
+    #[crate::test]
+    async fn yield_cpu_in_futures_unordered() {
+        use std::pin::Pin;
+        type BoxFut = Pin<Box<dyn std::future::Future<Output = i32>>>;
+
+        let mut futs: FuturesUnordered<BoxFut> = FuturesUnordered::new();
+        futs.push(Box::pin(async {
+            operations::yield_cpu().await;
+            1
+        }));
+        futs.push(Box::pin(async {
+            operations::yield_cpu().await;
+            2
+        }));
+
+        let mut results = Vec::new();
+        while let Some(val) = futs.next().await {
+            results.push(val);
+        }
+        results.sort();
+        assert_eq!(results, vec![1, 2]);
     }
 
     #[crate::test]

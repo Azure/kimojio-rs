@@ -33,10 +33,12 @@
 use std::future::Future;
 use std::io::IoSlice;
 use std::marker::PhantomData;
+#[cfg(any(feature = "io_uring", feature = "epoll"))]
+use std::mem::size_of;
 #[cfg(feature = "io_uring")]
-use std::mem::{size_of, size_of_val};
+use std::mem::size_of_val;
 use std::net::SocketAddr;
-#[cfg(feature = "io_uring")]
+#[cfg(any(feature = "io_uring", feature = "epoll"))]
 use std::net::{SocketAddrV4, SocketAddrV6};
 use std::panic::AssertUnwindSafe;
 use std::pin::Pin;
@@ -46,7 +48,7 @@ use std::time::Instant;
 
 use futures::future::FusedFuture;
 use futures::{FutureExt, Stream, StreamExt};
-#[cfg(feature = "io_uring")]
+#[cfg(any(feature = "io_uring", feature = "epoll"))]
 use libc::{AF_INET, AF_INET6, AF_UNIX, sa_family_t, sockaddr_in, sockaddr_in6, sockaddr_un};
 #[cfg(feature = "io_uring")]
 use rustix::fs::AtFlags;
@@ -123,7 +125,7 @@ pub fn open(filename: &CStr, flags: OFlags, mode: Mode) -> OwnedFdFuture<'_> {
 
 #[cfg(feature = "epoll")]
 pub fn open<'a>(_filename: &'a CStr, _flags: OFlags, _mode: Mode) -> OwnedFdFuture<'a> {
-    OwnedFdFuture::new()
+    OwnedFdFuture::stub()
 }
 
 #[cfg(feature = "io_uring")]
@@ -402,8 +404,8 @@ pub fn accept(fd: &impl AsFd) -> OwnedFdFuture<'_> {
 }
 
 #[cfg(feature = "epoll")]
-pub fn accept(_fd: &impl AsFd) -> OwnedFdFuture<'static> {
-    OwnedFdFuture::new()
+pub fn accept(fd: &impl AsFd) -> OwnedFdFuture<'_> {
+    OwnedFdFuture::new(fd)
 }
 
 #[cfg(feature = "io_uring")]
@@ -424,8 +426,16 @@ pub fn shutdown(fd: &impl AsFd, how: i32) -> UnitFuture<'_> {
 }
 
 #[cfg(feature = "epoll")]
-pub fn shutdown(_fd: &impl AsFd, _how: i32) -> UnitFuture<'_> {
-    UnitFuture::new()
+pub fn shutdown(fd: &impl AsFd, how: i32) -> UnitFuture<'_> {
+    let how = match how {
+        libc::SHUT_RD => rustix::net::Shutdown::Read,
+        libc::SHUT_WR => rustix::net::Shutdown::Write,
+        _ => rustix::net::Shutdown::Both,
+    };
+    match rustix::net::shutdown(fd, how) {
+        Ok(()) => UnitFuture::ready_ok(),
+        Err(e) => UnitFuture::ready_err(e),
+    }
 }
 
 #[cfg(feature = "io_uring")]
@@ -480,7 +490,7 @@ pub fn listen(fd: &impl AsFd, backlog: i32) -> Result<(), Errno> {
     rustix::net::listen(fd, backlog)
 }
 
-#[cfg(feature = "io_uring")]
+#[cfg(any(feature = "io_uring", feature = "epoll"))]
 fn sockaddr_from_socketaddr(addr: &SocketAddrV4) -> sockaddr_in {
     sockaddr_in {
         sin_addr: libc::in_addr {
@@ -492,7 +502,7 @@ fn sockaddr_from_socketaddr(addr: &SocketAddrV4) -> sockaddr_in {
     }
 }
 
-#[cfg(feature = "io_uring")]
+#[cfg(any(feature = "io_uring", feature = "epoll"))]
 fn sockaddr6_from_socketaddrv6(addr: &SocketAddrV6) -> sockaddr_in6 {
     sockaddr_in6 {
         sin6_addr: libc::in6_addr {
@@ -515,7 +525,7 @@ fn sockaddr6_from_socketaddrv6(addr: &SocketAddrV6) -> sockaddr_in6 {
 /// Will panic() if the address is neither a valid path nor a valid abstract
 /// name which can only happen in programmer error to construct a
 /// SocketAddrUnix that is not correctly initialized
-#[cfg(feature = "io_uring")]
+#[cfg(any(feature = "io_uring", feature = "epoll"))]
 fn sockaddr_from_socketaddr_unix(addr: &SocketAddrUnix) -> (sockaddr_un, usize) {
     #[cfg(target_arch = "x86_64")]
     let mut sun_path = [0i8; 108];
@@ -571,8 +581,28 @@ pub async fn connect_unix(fd: &impl AsFd, addr: &SocketAddrUnix) -> Result<(), E
     .await
 }
 #[cfg(feature = "epoll")]
-pub async fn connect_unix(_fd: &impl AsFd, _addr: &SocketAddrUnix) -> Result<(), Errno> {
-    unimplemented!("connect_unix not yet implemented for epoll backend")
+pub async fn connect_unix(fd: &impl AsFd, addr: &SocketAddrUnix) -> Result<(), Errno> {
+    use std::os::fd::AsRawFd as _;
+    let raw_fd = fd.as_fd().as_raw_fd();
+    let (sa, addrlen) = sockaddr_from_socketaddr_unix(addr);
+    let ret = unsafe {
+        libc::connect(
+            raw_fd,
+            &sa as *const sockaddr_un as *const libc::sockaddr,
+            addrlen as libc::socklen_t,
+        )
+    };
+    if ret == 0 {
+        return Ok(());
+    }
+    let err = std::io::Error::last_os_error();
+    let errno = Errno::from_io_error(&err);
+    match errno {
+        Some(e) if e == Errno::INPROGRESS => {}
+        Some(e) => return Err(e),
+        None => return Err(Errno::IO),
+    }
+    epoll_connect_wait(raw_fd).await
 }
 
 #[cfg(feature = "io_uring")]
@@ -612,8 +642,80 @@ pub async fn connect(fd: &impl AsFd, addr: &SocketAddr) -> Result<(), Errno> {
     }
 }
 #[cfg(feature = "epoll")]
-pub async fn connect(_fd: &impl AsFd, _addr: &SocketAddr) -> Result<(), Errno> {
-    unimplemented!("connect not yet implemented for epoll backend")
+pub async fn connect(fd: &impl AsFd, addr: &SocketAddr) -> Result<(), Errno> {
+    use std::os::fd::AsRawFd as _;
+    let raw_fd = fd.as_fd().as_raw_fd();
+    let ret = match addr {
+        SocketAddr::V4(v4) => {
+            let sa = sockaddr_from_socketaddr(v4);
+            unsafe {
+                libc::connect(
+                    raw_fd,
+                    &sa as *const sockaddr_in as *const libc::sockaddr,
+                    std::mem::size_of::<sockaddr_in>() as libc::socklen_t,
+                )
+            }
+        }
+        SocketAddr::V6(v6) => {
+            let sa = sockaddr6_from_socketaddrv6(v6);
+            unsafe {
+                libc::connect(
+                    raw_fd,
+                    &sa as *const sockaddr_in6 as *const libc::sockaddr,
+                    std::mem::size_of::<sockaddr_in6>() as libc::socklen_t,
+                )
+            }
+        }
+    };
+    if ret == 0 {
+        return Ok(());
+    }
+    let err = std::io::Error::last_os_error();
+    let errno = Errno::from_io_error(&err);
+    match errno {
+        Some(e) if e == Errno::INPROGRESS => {}
+        Some(e) => return Err(e),
+        None => return Err(Errno::IO),
+    }
+    epoll_connect_wait(raw_fd).await
+}
+
+/// Wait for a non-blocking connect to complete, then check SO_ERROR.
+#[cfg(feature = "epoll")]
+async fn epoll_connect_wait(raw_fd: std::os::fd::RawFd) -> Result<(), Errno> {
+    let mut registered = false;
+    futures::future::poll_fn(move |cx| {
+        if registered {
+            let mut ts = TaskState::get();
+            ts.epoll_driver.deregister(raw_fd);
+            drop(ts);
+            registered = false;
+            // getsockopt SO_ERROR
+            let mut err: libc::c_int = 0;
+            let mut errlen: libc::socklen_t = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
+            unsafe {
+                libc::getsockopt(
+                    raw_fd,
+                    libc::SOL_SOCKET,
+                    libc::SO_ERROR,
+                    &mut err as *mut libc::c_int as *mut libc::c_void,
+                    &mut errlen,
+                );
+            }
+            return if err == 0 {
+                Poll::Ready(Ok(()))
+            } else {
+                let io_err = std::io::Error::from_raw_os_error(err);
+                Poll::Ready(Errno::from_io_error(&io_err).map_or(Err(Errno::IO), Err))
+            };
+        }
+        let mut ts = TaskState::get();
+        ts.epoll_driver.register_write(raw_fd, cx.waker().clone());
+        drop(ts);
+        registered = true;
+        Poll::Pending
+    })
+    .await
 }
 
 #[cfg(feature = "io_uring")]
@@ -725,9 +827,9 @@ pub fn write<'a>(fd: &impl AsFd, buf: &'a [u8]) -> ErrnoOrFuture<UsizeFuture<'a>
     write_with_deadline(fd, buf, None)
 }
 #[cfg(feature = "epoll")]
-pub fn write<'a>(_fd: &impl AsFd, _buf: &'a [u8]) -> ErrnoOrFuture<UsizeFuture<'a>> {
+pub fn write<'a>(fd: &impl AsFd, buf: &'a [u8]) -> ErrnoOrFuture<UsizeFuture<'a>> {
     ErrnoOrFuture::Future {
-        fut: UsizeFuture::new(),
+        fut: UsizeFuture::write(fd, buf),
     }
 }
 
@@ -766,12 +868,12 @@ pub fn write_with_deadline<'a>(
 }
 #[cfg(feature = "epoll")]
 pub fn write_with_deadline<'a>(
-    _fd: &impl AsFd,
-    _buf: &'a [u8],
+    fd: &impl AsFd,
+    buf: &'a [u8],
     _deadline: Option<Instant>,
 ) -> ErrnoOrFuture<UsizeFuture<'a>> {
     ErrnoOrFuture::Future {
-        fut: UsizeFuture::new(),
+        fut: UsizeFuture::write(fd, buf),
     }
 }
 
@@ -799,11 +901,11 @@ pub fn write_with_timeout<'a>(
 }
 #[cfg(feature = "epoll")]
 pub fn write_with_timeout<'a>(
-    _fd: &impl AsFd,
-    _buf: &'a [u8],
+    fd: &impl AsFd,
+    buf: &'a [u8],
     _timeout: Option<Duration>,
 ) -> UsizeFuture<'a> {
-    UsizeFuture::new()
+    UsizeFuture::write(fd, buf)
 }
 
 #[cfg(feature = "io_uring")]
@@ -831,12 +933,12 @@ pub fn send<'a>(
 }
 #[cfg(feature = "epoll")]
 pub fn send<'a>(
-    _fd: &impl AsFd,
-    _buf: &'a [u8],
-    _flags: SendFlags,
+    fd: &impl AsFd,
+    buf: &'a [u8],
+    flags: SendFlags,
     _timeout: Option<Duration>,
 ) -> UsizeFuture<'a> {
-    UsizeFuture::new()
+    UsizeFuture::send(fd, buf, flags)
 }
 
 #[cfg(feature = "io_uring")]
@@ -864,12 +966,12 @@ pub fn recv<'a>(
 }
 #[cfg(feature = "epoll")]
 pub fn recv<'a>(
-    _fd: &impl AsFd,
-    _buf: &'a mut [u8],
-    _flags: RecvFlags,
+    fd: &impl AsFd,
+    buf: &'a mut [u8],
+    flags: RecvFlags,
     _timeout: Option<Duration>,
 ) -> UsizeFuture<'a> {
-    UsizeFuture::new()
+    UsizeFuture::recv(fd, buf, flags)
 }
 
 #[cfg(feature = "io_uring")]
@@ -997,8 +1099,8 @@ pub fn read<'a>(fd: &impl AsFd, buf: &'a mut [u8]) -> UsizeFuture<'a> {
     read_with_timeout(fd, buf, None)
 }
 #[cfg(feature = "epoll")]
-pub fn read<'a>(_fd: &impl AsFd, _buf: &'a mut [u8]) -> UsizeFuture<'a> {
-    UsizeFuture::new()
+pub fn read<'a>(fd: &impl AsFd, buf: &'a mut [u8]) -> UsizeFuture<'a> {
+    UsizeFuture::read(fd, buf)
 }
 
 #[cfg(feature = "io_uring")]
@@ -1036,12 +1138,12 @@ pub fn read_with_deadline<'a>(
 }
 #[cfg(feature = "epoll")]
 pub fn read_with_deadline<'a>(
-    _fd: &impl AsFd,
-    _buf: &'a mut [u8],
+    fd: &impl AsFd,
+    buf: &'a mut [u8],
     _deadline: Option<Instant>,
 ) -> ErrnoOrFuture<UsizeFuture<'a>> {
     ErrnoOrFuture::Future {
-        fut: UsizeFuture::new(),
+        fut: UsizeFuture::read(fd, buf),
     }
 }
 
@@ -1069,11 +1171,11 @@ pub fn read_with_timeout<'a>(
 }
 #[cfg(feature = "epoll")]
 pub fn read_with_timeout<'a>(
-    _fd: &impl AsFd,
-    _buf: &'a mut [u8],
+    fd: &impl AsFd,
+    buf: &'a mut [u8],
     _timeout: Option<Duration>,
 ) -> UsizeFuture<'a> {
-    UsizeFuture::new()
+    UsizeFuture::read(fd, buf)
 }
 
 #[cfg(feature = "io_uring")]
@@ -1133,8 +1235,9 @@ pub fn close(fd: OwnedFd) -> UnitFuture<'static> {
     UnitFuture::new(opcode::Close::new(Fd(fd)).build(), fd, None, IOType::Close)
 }
 #[cfg(feature = "epoll")]
-pub fn close(_fd: OwnedFd) -> UnitFuture<'static> {
-    UnitFuture::new()
+pub fn close(fd: OwnedFd) -> UnitFuture<'static> {
+    drop(fd); // OwnedFd::drop closes the file descriptor
+    UnitFuture::ready_ok()
 }
 
 #[cfg(feature = "io_uring")]
@@ -1149,7 +1252,7 @@ pub fn nop() -> UnitFuture<'static> {
 }
 #[cfg(feature = "epoll")]
 pub fn nop() -> UnitFuture<'static> {
-    UnitFuture::new()
+    UnitFuture::ready_ok()
 }
 
 /// Support direct command passthrough to underlying devices behind io_uring.
@@ -1386,17 +1489,42 @@ pub fn sleep(duration: Duration) -> SleepFuture<'static> {
 
     #[cfg(feature = "epoll")]
     {
-        let _ = duration;
+        use rustix::time::{Itimerspec, TimerfdClockId, TimerfdFlags, TimerfdTimerFlags, Timespec};
+        let timer_fd = rustix::time::timerfd_create(
+            TimerfdClockId::Monotonic,
+            TimerfdFlags::NONBLOCK | TimerfdFlags::CLOEXEC,
+        )
+        .expect("timerfd_create failed");
+        let secs = duration.as_secs() as i64;
+        let ns = duration.subsec_nanos() as i64;
+        // A zero duration means "fire immediately": timerfd with it_value=0 would disarm,
+        // so use 1 nanosecond minimum to ensure the fd fires.
+        let (secs, ns) = if secs == 0 && ns == 0 {
+            (0, 1)
+        } else {
+            (secs, ns)
+        };
+        let spec = Itimerspec {
+            it_interval: Timespec {
+                tv_sec: 0,
+                tv_nsec: 0,
+            },
+            it_value: Timespec {
+                tv_sec: secs,
+                tv_nsec: ns,
+            },
+        };
+        rustix::time::timerfd_settime(&timer_fd, TimerfdTimerFlags::empty(), &spec)
+            .expect("timerfd_settime failed");
+        let fut = UnitFuture::timer_fd(timer_fd);
         #[cfg(not(feature = "virtual-clock"))]
         {
-            SleepFuture {
-                fut: UnitFuture::new(),
-            }
+            SleepFuture { fut }
         }
         #[cfg(feature = "virtual-clock")]
         {
             SleepFuture {
-                inner: SleepFutureInner::Real(UnitFuture::new()),
+                inner: SleepFutureInner::Real(fut),
             }
         }
     }

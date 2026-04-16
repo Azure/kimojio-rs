@@ -33,6 +33,9 @@ zerocopy.workspace = true
 [target.'cfg(target_os = "linux")'.dependencies]
 rustix-uring = { version = "0.6", optional = true }
 
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_IO", "Win32_System_Threading"], optional = true }
+
 [features]
 default = ["tls", "io_uring"]
 # Enable TLS/OpenSSL support
@@ -51,6 +54,9 @@ setup_single_issuer = []
 # This requires using 128 byte SQEs and 32 byte CQEs that encapsulate the
 # underlying NVMe SQE and CQEs
 io_uring_cmd = []
+# Enable the Windows IOCP backend (Windows only). Skeleton only; full
+# implementation is future work.  Mutually exclusive with "io_uring" and "epoll".
+windows-iocp = ["dep:windows-sys"]
 noencrypt = []
 enter_stats = []
 fault_injection = []

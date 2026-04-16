@@ -26,6 +26,10 @@ path = "src/bin/retry_backoff.rs"
 required-features = ["virtual-clock"]
 
 [[bin]]
+name = "tcp-echo-server"
+path = "src/bin/tcp_echo_server.rs"
+
+[[bin]]
 name = "tls-echo-server"
 path = "src/bin/tls_echo_server.rs"
 required-features = ["tls"]

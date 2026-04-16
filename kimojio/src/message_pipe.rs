@@ -148,6 +148,19 @@ impl<T: Send, R: Send> MessagePipe<T, R> {
         std::future::ready(Err(crate::Errno::from_raw_os_error(libc::ENOSYS)))
     }
 
+    #[cfg(iocp_backend)]
+    pub fn recv_message(&self) -> impl std::future::Future<Output = Result<Box<R>, crate::Errno>> {
+        std::future::ready(Err(crate::Errno::from_raw_os_error(libc::ENOSYS)))
+    }
+
+    #[cfg(iocp_backend)]
+    pub fn recv_message_with_timeout(
+        &self,
+        _timeout: Option<Duration>,
+    ) -> impl std::future::Future<Output = Result<Box<R>, crate::Errno>> {
+        std::future::ready(Err(crate::Errno::from_raw_os_error(libc::ENOSYS)))
+    }
+
     /// Send a message on the pipe from any thread. `message` must be boxed as
     /// it is sent in-process as a pointer. This is a blocking call and should
     /// never be called from an async task.

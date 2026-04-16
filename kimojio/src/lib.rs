@@ -8,11 +8,15 @@ use std::rc::Rc;
 use std::task::Waker;
 
 use futures::Future;
+pub use libc::c_int;
 pub use libc::{
-    EAGAIN, EALREADY, EBADFD, EBUSY, EEXIST, EINTR, EINVAL, EIO, ENOENT, ENOTCONN, ENOTDIR,
-    ENOTRECOVERABLE, ENOTSUP, EPERM, EPIPE, EPROTO, ESHUTDOWN, ETIMEDOUT,
+    EAGAIN, EALREADY, EBUSY, EEXIST, EINTR, EINVAL, EIO, ENOENT, ENOTCONN, ENOTDIR, EPERM, EPIPE,
+    EPROTO, ETIMEDOUT,
 };
-pub use libc::{S_IFDIR, S_IFLNK, S_IFMT, S_IFREG, c_int};
+#[cfg(not(target_os = "windows"))]
+pub use libc::{EBADFD, ENOTRECOVERABLE, ENOTSUP, ESHUTDOWN};
+#[cfg(not(target_os = "windows"))]
+pub use libc::{S_IFDIR, S_IFLNK, S_IFMT, S_IFREG};
 pub use libc::{SIGINT, SIGTERM};
 
 mod async_channel;
@@ -31,6 +35,8 @@ pub(crate) mod epoll_future;
 mod errors;
 mod handle_table;
 pub mod io_type;
+#[cfg(iocp_backend)]
+pub(crate) mod iocp_future;
 mod message_pipe;
 mod mut_in_place_cell;
 pub mod operations;

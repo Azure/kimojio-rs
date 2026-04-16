@@ -432,6 +432,20 @@ impl Runtime {
                 }
                 task_state = task_state_cell.borrow_mut();
             }
+            #[cfg(iocp_backend)]
+            {
+                let want = if busy_poll || task_state.any_ready() {
+                    0
+                } else {
+                    1
+                };
+                let wakers = task_state.select_driver.collect_ready(want);
+                let task_state_cell = task_state.into_inner();
+                for waker in wakers {
+                    waker.wake();
+                }
+                task_state = task_state_cell.borrow_mut();
+            }
             task_state.prepare_cohort();
 
             #[cfg(feature = "virtual-clock")]

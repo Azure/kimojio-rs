@@ -34,7 +34,7 @@ zerocopy.workspace = true
 rustix-uring = { version = "0.6", optional = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_IO", "Win32_System_Threading"], optional = true }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_IO", "Win32_System_Threading", "Win32_Networking_WinSock"], optional = true }
 
 [features]
 default = ["tls", "io_uring"]

@@ -4,9 +4,9 @@
 use crate::operations::{self, AddressFamily, SocketType, ipproto, listen, socket};
 
 use crate::{Errno, OwnedFd};
-use rustix::net::sockopt::{
-    set_socket_keepalive, set_tcp_keepcnt, set_tcp_keepidle, set_tcp_keepintvl, set_tcp_nodelay,
-};
+use rustix::net::sockopt::{set_socket_keepalive, set_tcp_nodelay};
+#[cfg(not(target_os = "windows"))]
+use rustix::net::sockopt::{set_tcp_keepcnt, set_tcp_keepidle, set_tcp_keepintvl};
 use std::net::{Ipv6Addr, SocketAddr, SocketAddrV6};
 use std::time::Duration;
 
@@ -19,7 +19,7 @@ pub async fn create_server_socket(port: u16) -> Result<OwnedFd, Errno> {
     // Bind to INADDR_ANY => UNSPECIFIED to listen for connections on any interface on the host
     let sock_addr = SocketAddrV6::new(Ipv6Addr::UNSPECIFIED, port, 0, 0);
     rustix::net::bind(&server_fd, &sock_addr)?;
-    listen(&server_fd, libc::SOMAXCONN)?;
+    listen(&server_fd, 128)?;
 
     Ok(server_fd)
 }
@@ -47,18 +47,22 @@ pub async fn create_client_socket(sock_addr: &SocketAddr) -> Result<OwnedFd, Err
 /// Enable TCP keep alive on the socket.
 pub fn enable_tcp_keep_alive(
     socket: &OwnedFd,
+    #[cfg_attr(target_os = "windows", allow(unused_variables))]
     initial_idle_time_before_probe: Duration,
-    keep_alive_interval: Duration,
-    keep_alive_probes: u32,
+    #[cfg_attr(target_os = "windows", allow(unused_variables))] keep_alive_interval: Duration,
+    #[cfg_attr(target_os = "windows", allow(unused_variables))] keep_alive_probes: u32,
 ) -> Result<(), Errno> {
-    // Initial idle time before sending the first probe.
-    set_tcp_keepidle(socket, initial_idle_time_before_probe)?;
+    #[cfg(not(target_os = "windows"))]
+    {
+        // Initial idle time before sending the first probe.
+        set_tcp_keepidle(socket, initial_idle_time_before_probe)?;
 
-    // Keep alive message interval.
-    set_tcp_keepintvl(socket, keep_alive_interval)?;
+        // Keep alive message interval.
+        set_tcp_keepintvl(socket, keep_alive_interval)?;
 
-    // Number of probes.
-    set_tcp_keepcnt(socket, keep_alive_probes)?;
+        // Number of probes.
+        set_tcp_keepcnt(socket, keep_alive_probes)?;
+    }
 
     set_socket_keepalive(socket, true)?;
 

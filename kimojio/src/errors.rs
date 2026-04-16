@@ -23,9 +23,12 @@ impl std::error::Error for ChannelError {}
 impl From<ChannelError> for Errno {
     fn from(value: ChannelError) -> Self {
         match value {
+            #[cfg(not(iocp_backend))]
             ChannelError::Closed => Errno::PIPE,
+            #[cfg(iocp_backend)]
+            ChannelError::Closed => Errno::CONNRESET,
             ChannelError::Canceled => Errno::CANCELED,
-            ChannelError::Timeout => Errno::TIME,
+            ChannelError::Timeout => Errno::TIMEDOUT,
         }
     }
 }

@@ -448,6 +448,10 @@ pub struct TaskState {
     #[cfg(epoll_backend)]
     pub epoll_driver: crate::backend::epoll::EpollDriver,
 
+    // The select-based readiness driver for the IOCP backend
+    #[cfg(iocp_backend)]
+    pub select_driver: crate::backend::select_driver::SelectDriver,
+
     // Boolean indicating if the event loop should continue to process new
     // events or immediately terminate. Used internally to implement shutdown
     // at the application.rs framework level.
@@ -497,6 +501,8 @@ impl TaskState {
             next_tag: 0,
             #[cfg(epoll_backend)]
             epoll_driver: crate::backend::epoll::EpollDriver::new(),
+            #[cfg(iocp_backend)]
+            select_driver: crate::backend::select_driver::SelectDriver::new(),
             #[cfg(feature = "fault_injection")]
             fault: None,
             #[cfg(feature = "virtual-clock")]

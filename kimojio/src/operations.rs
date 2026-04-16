@@ -62,8 +62,10 @@ use rustix::fs::Mode;
 pub use rustix::fs::OFlags;
 #[cfg(io_uring_backend)]
 pub use rustix::io_uring::Advice;
+#[cfg(unix)]
+pub use rustix::net::SocketAddrUnix;
 pub use rustix::net::{AddressFamily, Protocol, SocketType, ipproto};
-pub use rustix::net::{RecvFlags, SendFlags, SocketAddrUnix};
+pub use rustix::net::{RecvFlags, SendFlags};
 #[cfg(io_uring_backend)]
 pub use rustix_uring::types::{OFlags, Statx};
 
@@ -77,6 +79,11 @@ use crate::epoll_future::{
 };
 #[cfg(io_uring_backend)]
 use crate::io_type::IOType;
+#[cfg(iocp_backend)]
+use crate::iocp_future::{
+    IocpOwnedFdFuture as OwnedFdFuture, IocpUnitFuture as UnitFuture,
+    IocpUsizeFuture as UsizeFuture,
+};
 #[cfg(io_uring_backend)]
 use crate::ring_future::{OwnedFdFuture, UnitFuture, UsizeFuture};
 use crate::task::{IoScopeCompletions, Task, TaskReadyState, TaskState};
@@ -91,9 +98,11 @@ use rustix_uring::{
     opcode,
     types::{Fd, Timespec},
 };
+#[cfg(not(target_os = "windows"))]
+use std::ffi::CStr;
 #[cfg(io_uring_backend)]
 use std::mem::ManuallyDrop;
-use std::{ffi::CStr, time::Duration};
+use std::time::Duration;
 
 #[cfg(feature = "io_uring_cmd")]
 use crate::ring_future::UringCmdFuture;
@@ -385,6 +394,18 @@ pub async fn socket(
     rustix::net::socket(domain, socket_type, protocol)
 }
 
+#[cfg(iocp_backend)]
+pub async fn socket(
+    domain: AddressFamily,
+    socket_type: SocketType,
+    protocol: Option<Protocol>,
+) -> Result<OwnedFd, Errno> {
+    use rustix::fd::AsRawFd as _;
+    let fd = rustix::net::socket(domain, socket_type, protocol)?;
+    crate::iocp_future::set_nonblocking_raw(fd.as_fd().as_raw_fd());
+    Ok(fd)
+}
+
 #[cfg(io_uring_backend)]
 /// Accepts an incoming connection on a listening socket.
 ///
@@ -404,6 +425,11 @@ pub fn accept(fd: &impl AsFd) -> OwnedFdFuture<'_> {
 }
 
 #[cfg(epoll_backend)]
+pub fn accept(fd: &impl AsFd) -> OwnedFdFuture<'_> {
+    OwnedFdFuture::new(fd)
+}
+
+#[cfg(iocp_backend)]
 pub fn accept(fd: &impl AsFd) -> OwnedFdFuture<'_> {
     OwnedFdFuture::new(fd)
 }
@@ -436,6 +462,16 @@ pub fn shutdown(fd: &impl AsFd, how: i32) -> UnitFuture<'_> {
         Ok(()) => UnitFuture::ready_ok(),
         Err(e) => UnitFuture::ready_err(e),
     }
+}
+
+#[cfg(iocp_backend)]
+pub fn shutdown(fd: &impl AsFd, how: i32) -> UnitFuture<'_> {
+    let how = match how {
+        0 => rustix::net::Shutdown::Read,
+        1 => rustix::net::Shutdown::Write,
+        _ => rustix::net::Shutdown::Both,
+    };
+    UnitFuture::shutdown(fd, how)
 }
 
 #[cfg(io_uring_backend)]
@@ -477,7 +513,7 @@ pub fn sync_file_range(fd: &impl AsFd, offset: u64, len: u32) -> UnitFuture<'_> 
 ///
 /// Returns `Ok(())` on success, or an error.
 pub fn bind(fd: &impl AsFd, address: &SocketAddr) -> Result<(), Errno> {
-    rustix::net::bind(fd, address)
+    rustix::net::bind(fd.as_fd(), address)
 }
 
 /// Marks a socket as a passive socket for accepting connections.
@@ -487,7 +523,7 @@ pub fn bind(fd: &impl AsFd, address: &SocketAddr) -> Result<(), Errno> {
 ///
 /// Returns `Ok(())` on success, or an error.
 pub fn listen(fd: &impl AsFd, backlog: i32) -> Result<(), Errno> {
-    rustix::net::listen(fd, backlog)
+    rustix::net::listen(fd.as_fd(), backlog)
 }
 
 #[cfg(any(io_uring_backend, epoll_backend))]
@@ -680,6 +716,12 @@ pub async fn connect(fd: &impl AsFd, addr: &SocketAddr) -> Result<(), Errno> {
     epoll_connect_wait(raw_fd).await
 }
 
+#[cfg(iocp_backend)]
+pub async fn connect(_fd: &impl AsFd, _addr: &SocketAddr) -> Result<(), Errno> {
+    // Non-blocking connect is not yet implemented for the IOCP backend.
+    Err(Errno::OPNOTSUPP)
+}
+
 /// Wait for a non-blocking connect to complete, then check SO_ERROR.
 #[cfg(epoll_backend)]
 async fn epoll_connect_wait(raw_fd: std::os::fd::RawFd) -> Result<(), Errno> {
@@ -744,6 +786,17 @@ pub fn writev<'a>(
     }
 }
 
+#[cfg(iocp_backend)]
+pub fn writev<'a>(
+    _fd: &impl AsFd,
+    _iovec: &'a [IoSlice<'_>],
+    _offset: Option<u64>,
+) -> ErrnoOrFuture<UsizeFuture<'a>> {
+    ErrnoOrFuture::Future {
+        fut: UsizeFuture::new(),
+    }
+}
+
 #[cfg(io_uring_backend)]
 /// Writes data from multiple buffers with a deadline.
 ///
@@ -779,6 +832,18 @@ pub fn writev_with_deadline<'a>(
     }
 }
 #[cfg(epoll_backend)]
+pub fn writev_with_deadline<'a>(
+    _fd: &impl AsFd,
+    _iovec: &'a [IoSlice<'_>],
+    _offset: Option<u64>,
+    _deadline: Option<Instant>,
+) -> ErrnoOrFuture<UsizeFuture<'a>> {
+    ErrnoOrFuture::Future {
+        fut: UsizeFuture::new(),
+    }
+}
+
+#[cfg(iocp_backend)]
 pub fn writev_with_deadline<'a>(
     _fd: &impl AsFd,
     _iovec: &'a [IoSlice<'_>],
@@ -833,6 +898,13 @@ pub fn write<'a>(fd: &impl AsFd, buf: &'a [u8]) -> ErrnoOrFuture<UsizeFuture<'a>
     }
 }
 
+#[cfg(iocp_backend)]
+pub fn write<'a>(fd: &'a impl AsFd, buf: &'a [u8]) -> ErrnoOrFuture<UsizeFuture<'a>> {
+    ErrnoOrFuture::Future {
+        fut: UsizeFuture::write(fd, buf),
+    }
+}
+
 #[cfg(io_uring_backend)]
 /// Writes data from a buffer with a deadline.
 ///
@@ -877,6 +949,17 @@ pub fn write_with_deadline<'a>(
     }
 }
 
+#[cfg(iocp_backend)]
+pub fn write_with_deadline<'a>(
+    fd: &'a impl AsFd,
+    buf: &'a [u8],
+    _deadline: Option<Instant>,
+) -> ErrnoOrFuture<UsizeFuture<'a>> {
+    ErrnoOrFuture::Future {
+        fut: UsizeFuture::write(fd, buf),
+    }
+}
+
 #[cfg(io_uring_backend)]
 /// Writes data from a buffer with a timeout.
 ///
@@ -902,6 +985,15 @@ pub fn write_with_timeout<'a>(
 #[cfg(epoll_backend)]
 pub fn write_with_timeout<'a>(
     fd: &impl AsFd,
+    buf: &'a [u8],
+    _timeout: Option<Duration>,
+) -> UsizeFuture<'a> {
+    UsizeFuture::write(fd, buf)
+}
+
+#[cfg(iocp_backend)]
+pub fn write_with_timeout<'a>(
+    fd: &'a impl AsFd,
     buf: &'a [u8],
     _timeout: Option<Duration>,
 ) -> UsizeFuture<'a> {
@@ -941,6 +1033,16 @@ pub fn send<'a>(
     UsizeFuture::send(fd, buf, flags)
 }
 
+#[cfg(iocp_backend)]
+pub fn send<'a>(
+    fd: &'a impl AsFd,
+    buf: &'a [u8],
+    flags: SendFlags,
+    _timeout: Option<Duration>,
+) -> UsizeFuture<'a> {
+    UsizeFuture::send(fd, buf, flags)
+}
+
 #[cfg(io_uring_backend)]
 /// Receives data from a socket.
 ///
@@ -967,6 +1069,16 @@ pub fn recv<'a>(
 #[cfg(epoll_backend)]
 pub fn recv<'a>(
     fd: &impl AsFd,
+    buf: &'a mut [u8],
+    flags: RecvFlags,
+    _timeout: Option<Duration>,
+) -> UsizeFuture<'a> {
+    UsizeFuture::recv(fd, buf, flags)
+}
+
+#[cfg(iocp_backend)]
+pub fn recv<'a>(
+    fd: &'a impl AsFd,
     buf: &'a mut [u8],
     flags: RecvFlags,
     _timeout: Option<Duration>,
@@ -1103,6 +1215,11 @@ pub fn read<'a>(fd: &impl AsFd, buf: &'a mut [u8]) -> UsizeFuture<'a> {
     UsizeFuture::read(fd, buf)
 }
 
+#[cfg(iocp_backend)]
+pub fn read<'a>(fd: &'a impl AsFd, buf: &'a mut [u8]) -> UsizeFuture<'a> {
+    UsizeFuture::read(fd, buf)
+}
+
 #[cfg(io_uring_backend)]
 /// Reads data from a file descriptor with a deadline.
 ///
@@ -1147,6 +1264,17 @@ pub fn read_with_deadline<'a>(
     }
 }
 
+#[cfg(iocp_backend)]
+pub fn read_with_deadline<'a>(
+    fd: &'a impl AsFd,
+    buf: &'a mut [u8],
+    _deadline: Option<Instant>,
+) -> ErrnoOrFuture<UsizeFuture<'a>> {
+    ErrnoOrFuture::Future {
+        fut: UsizeFuture::read(fd, buf),
+    }
+}
+
 #[cfg(io_uring_backend)]
 /// Reads data from a file descriptor with a timeout.
 ///
@@ -1172,6 +1300,15 @@ pub fn read_with_timeout<'a>(
 #[cfg(epoll_backend)]
 pub fn read_with_timeout<'a>(
     fd: &impl AsFd,
+    buf: &'a mut [u8],
+    _timeout: Option<Duration>,
+) -> UsizeFuture<'a> {
+    UsizeFuture::read(fd, buf)
+}
+
+#[cfg(iocp_backend)]
+pub fn read_with_timeout<'a>(
+    fd: &'a impl AsFd,
     buf: &'a mut [u8],
     _timeout: Option<Duration>,
 ) -> UsizeFuture<'a> {
@@ -1240,6 +1377,12 @@ pub fn close(fd: OwnedFd) -> UnitFuture<'static> {
     UnitFuture::ready_ok()
 }
 
+#[cfg(iocp_backend)]
+pub fn close(fd: OwnedFd) -> UnitFuture<'static> {
+    drop(fd);
+    UnitFuture::ready_ok()
+}
+
 #[cfg(io_uring_backend)]
 /// Performs a no-operation.
 ///
@@ -1251,6 +1394,11 @@ pub fn nop() -> UnitFuture<'static> {
     UnitFuture::new(opcode::Nop::new().build(), -1, None, IOType::Nop)
 }
 #[cfg(epoll_backend)]
+pub fn nop() -> UnitFuture<'static> {
+    UnitFuture::ready_ok()
+}
+
+#[cfg(iocp_backend)]
 pub fn nop() -> UnitFuture<'static> {
     UnitFuture::ready_ok()
 }
@@ -1375,8 +1523,9 @@ impl FusedFuture for SetYieldCpuFuture {
     }
 }
 
-/// Maps an io_uring timeout completion result to the `SleepFuture` contract:
+/// Maps an io_uring/epoll timeout completion result to the `SleepFuture` contract:
 /// `Errno::TIME` (normal expiry) becomes `Ok(())`.
+#[cfg(not(iocp_backend))]
 fn map_timeout_poll(poll: Poll<Result<(), Errno>>) -> Poll<Result<(), Errno>> {
     match poll {
         Poll::Ready(Err(Errno::TIME)) => Poll::Ready(Ok(())),
@@ -1528,6 +1677,21 @@ pub fn sleep(duration: Duration) -> SleepFuture<'static> {
             }
         }
     }
+
+    #[cfg(iocp_backend)]
+    {
+        let fut = UnitFuture::sleep(duration);
+        #[cfg(not(feature = "virtual-clock"))]
+        {
+            SleepFuture { fut }
+        }
+        #[cfg(feature = "virtual-clock")]
+        {
+            SleepFuture {
+                inner: SleepFutureInner::Real(fut),
+            }
+        }
+    }
 }
 
 /// Suspends the task until the specified deadline.
@@ -1647,7 +1811,14 @@ impl<'a> Future for SleepFuture<'a> {
     type Output = Result<(), Errno>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        map_timeout_poll(self.project().fut.poll(cx))
+        let inner = self.project().fut.poll(cx);
+        // On io_uring/epoll the timer reports expiry as Err(TIME), which
+        // map_timeout_poll converts to Ok(()). On the IOCP backend we use
+        // std::thread::sleep, so the future resolves Ok(()) directly.
+        #[cfg(not(iocp_backend))]
+        return map_timeout_poll(inner);
+        #[cfg(iocp_backend)]
+        return inner;
     }
 }
 
@@ -1710,7 +1881,13 @@ impl<'a> Future for SleepFuture<'a> {
         // SAFETY: Same pin projection invariants as cancel() — see above.
         unsafe {
             match &mut self.get_unchecked_mut().inner {
-                SleepFutureInner::Real(fut) => map_timeout_poll(Pin::new_unchecked(fut).poll(cx)),
+                SleepFutureInner::Real(fut) => {
+                    let inner = Pin::new_unchecked(fut).poll(cx);
+                    #[cfg(not(iocp_backend))]
+                    return map_timeout_poll(inner);
+                    #[cfg(iocp_backend)]
+                    return inner;
+                }
                 SleepFutureInner::Virtual(fut) => Pin::new(fut).poll(cx),
             }
         }
@@ -1974,6 +2151,7 @@ pub fn shutdown_loop() {
 }
 
 /// returns the prefix of version consisting of only digits and periods
+#[cfg(not(target_os = "windows"))]
 fn version_prefix(version: &str) -> &str {
     for (index, char) in version.char_indices() {
         if !char.is_ascii_digit() && char != '.' {
@@ -1986,6 +2164,7 @@ fn version_prefix(version: &str) -> &str {
 /// Parses a string in the form of "5.15.0-rc1" into a tuple of (5, 15).
 /// If the string does not contain a valid version, then return an error.
 /// Any trailing characters after the version are ignored.
+#[cfg(not(target_os = "windows"))]
 fn parse_version(version: &str) -> Result<(u32, u32), std::num::ParseIntError> {
     let version = version_prefix(version);
     let mut version = version.split('.');
@@ -1996,6 +2175,7 @@ fn parse_version(version: &str) -> Result<(u32, u32), std::num::ParseIntError> {
 
 /// Returns the kernel version as a tuple of (major, minor).
 /// If the kernel version cannot be determined, then return (5, 15).
+#[cfg(not(target_os = "windows"))]
 pub fn kernel_version() -> (u32, u32) {
     let uname = rustix::system::uname();
     let version_str = uname.release().to_string_lossy();

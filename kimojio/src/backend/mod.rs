@@ -22,6 +22,9 @@ pub(crate) mod epoll;
 #[cfg(iocp_backend)]
 pub(crate) mod iocp;
 
+#[cfg(iocp_backend)]
+pub(crate) mod select_driver;
+
 // Re-export the backend-specific ring and associated types so the rest of the
 // crate can import them from a single location without knowing which backend
 // is active.

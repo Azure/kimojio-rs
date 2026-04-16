@@ -8,6 +8,7 @@ publish = false
 tls = ["kimojio/tls", "dep:openssl"]
 io_uring = ["kimojio/io_uring"]
 epoll = ["kimojio/epoll"]
+windows-iocp = ["kimojio/windows-iocp"]
 virtual-clock = ["kimojio/virtual-clock"]
 default = ["io_uring"]
 

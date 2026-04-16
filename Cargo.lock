@@ -631,7 +631,7 @@ name = "kimojio-tls"
 version = "0.16.0"
 dependencies = [
  "cc",
- "rustix-uring",
+ "rustix",
 ]
 
 [[package]]

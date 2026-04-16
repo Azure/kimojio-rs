@@ -3,11 +3,11 @@
 use std::rc::Rc;
 
 use futures::Future;
+#[cfg(feature = "io_uring")]
 use rustix::thread::sched_getcpu;
-use rustix_uring::Errno;
 
 use crate::{
-    Completion, CompletionState, OwnedFd, RuntimeHandle,
+    Completion, CompletionState, Errno, OwnedFd, RuntimeHandle,
     configuration::{BusyPoll, Configuration},
     task::{Task, TaskReadyState, TaskState},
     task_ref::create_waker,
@@ -68,7 +68,10 @@ fn poll_task(task: Rc<Task>, mut task_state: TaskStateCellRef<'_>) -> TaskStateC
             tag,
             start_time,
             activity_id,
+            #[cfg(feature = "io_uring")]
             cpu: sched_getcpu() as u16,
+            #[cfg(not(feature = "io_uring"))]
+            cpu: 0,
         },
     );
 
@@ -84,6 +87,7 @@ struct RingEventTraceInfo {
     iopoll: bool,
 }
 
+#[cfg(feature = "io_uring")]
 fn process_completions(
     mut task_state: TaskStateCellRef<'_>,
     trace_info: RingEventTraceInfo,
@@ -166,7 +170,7 @@ fn process_completions(
 
                 *state = CompletionState::Completed {
                     result,
-                    #[cfg(feature = "io_uring_cmd")]
+                    #[cfg(all(feature = "io_uring", feature = "io_uring_cmd"))]
                     big_cqe: *cqe.big_cqe(),
                 };
 
@@ -194,6 +198,7 @@ fn process_completions(
     task_state
 }
 
+#[cfg(feature = "io_uring")]
 pub(crate) fn submit_and_complete_io_all(
     mut task_state: TaskStateCellRef<'_>,
     busy_poll: bool,
@@ -230,6 +235,7 @@ pub(crate) fn submit_and_complete_io_all(
 /// completion queue ring buffer)
 ///
 /// Returns the tag for tracing purposes.
+#[cfg(feature = "io_uring")]
 pub(crate) fn submit_and_complete_io(
     mut task_state: TaskStateCellRef<'_>,
     busy_poll: bool,

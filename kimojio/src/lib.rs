@@ -22,6 +22,7 @@ mod async_oneshot;
 mod async_reader_writer_lock;
 mod async_semaphore;
 mod async_stream;
+pub(crate) mod backend;
 mod buffer_pipe;
 mod cancellation_token;
 pub mod configuration;
@@ -88,8 +89,10 @@ pub use runtime_handle::{
     create_open_request,
 };
 pub use rustix::fd::OwnedFd;
+pub use rustix::io::Errno;
+#[cfg(feature = "io_uring")]
 use rustix::io_uring::io_uring_user_data;
-pub use rustix_uring::Errno;
+#[cfg(feature = "io_uring")]
 use rustix_uring::opcode::AsyncCancel;
 use task::Task;
 pub use tracing::{EventEnvelope, Events, TraceConfiguration};
@@ -103,9 +106,9 @@ pub use kimojio_macros::{main, test};
 enum CompletionState {
     /// The future is created but SQE is not yet submitted to the kernel
     Idle {
-        #[cfg(feature = "io_uring_cmd")]
+        #[cfg(all(feature = "io_uring", feature = "io_uring_cmd"))]
         entry: Option<rustix_uring::squeue::Entry128>,
-        #[cfg(not(feature = "io_uring_cmd"))]
+        #[cfg(all(feature = "io_uring", not(feature = "io_uring_cmd")))]
         entry: Option<rustix_uring::squeue::Entry>,
         timespec: bool,
     },
@@ -119,7 +122,7 @@ enum CompletionState {
     /// The I/O is completed
     Completed {
         result: Result<u32, Errno>,
-        #[cfg(feature = "io_uring_cmd")]
+        #[cfg(all(feature = "io_uring", feature = "io_uring_cmd"))]
         big_cqe: [u64; 2],
     },
     Terminated,
@@ -129,6 +132,7 @@ pub(crate) struct Completion {
     state: MutInPlaceCell<CompletionState>,
     owned_resources: CompletionResources,
     // memory for timeouts
+    #[cfg(feature = "io_uring")]
     timespec: rustix_uring::types::Timespec,
     tag: u32,
     task_index: u16,
@@ -138,6 +142,7 @@ pub(crate) struct Completion {
 #[allow(dead_code)]
 enum CompletionResources {
     None,
+    #[cfg(feature = "io_uring")]
     Timespec(rustix_uring::types::Timespec),
     Box(Box<dyn std::any::Any>),
     Rc(Rc<dyn std::any::Any>),
@@ -145,13 +150,14 @@ enum CompletionResources {
 }
 
 impl Completion {
+    #[allow(dead_code)]
     pub fn cancel(self: &Rc<Self>, task_state: &mut task::TaskState) {
         let should_cancel = self.state.use_mut(|state| match state {
             CompletionState::Idle { .. } => {
                 // cancel immediately but skipping submission
                 *state = CompletionState::Completed {
                     result: Err(Errno::CANCELED),
-                    #[cfg(feature = "io_uring_cmd")]
+                    #[cfg(all(feature = "io_uring", feature = "io_uring_cmd"))]
                     big_cqe: [0; 2],
                 };
                 false
@@ -167,6 +173,7 @@ impl Completion {
             CompletionState::Terminated | CompletionState::Completed { .. } => false,
         });
 
+        #[cfg(feature = "io_uring")]
         if should_cancel {
             let user_data_ptr = Rc::as_ptr(self) as *mut libc::c_void;
             let user_data = io_uring_user_data::from_ptr(user_data_ptr);
@@ -180,6 +187,8 @@ impl Completion {
                 task_state.stats.increment_in_flight_io(1);
             }
         }
+        #[cfg(not(feature = "io_uring"))]
+        let _ = should_cancel;
     }
 }
 

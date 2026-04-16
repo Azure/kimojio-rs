@@ -6,7 +6,7 @@ license.workspace = true
 homepage.workspace = true
 repository.workspace = true
 readme.workspace = true
-description = "A thread-per-core Linux io_uring async runtime optimized for latency."
+description = "A thread-per-core async runtime optimized for latency, with io_uring on Linux and epoll/IOCP as alternatives."
 
 [lints.rust]
 # async_fn_in_trait can be a problem for public traits that
@@ -25,16 +25,24 @@ libc.workspace = true
 openssl = { workspace = true, optional = true }
 pin-project-lite.workspace = true
 rustix.workspace = true
-rustix-uring.workspace = true
 scopeguard.workspace = true
 static_assertions.workspace = true
 uuid.workspace = true
 zerocopy.workspace = true
 
+[target.'cfg(target_os = "linux")'.dependencies]
+rustix-uring = { version = "0.6", optional = true }
+
 [features]
-default = ["tls"]
+default = ["tls", "io_uring"]
 # Enable TLS/OpenSSL support
 tls = ["dep:openssl", "dep:kimojio-tls"]
+# Enable the io_uring backend (default on Linux). Requires kernel 5.15+.
+# Disable in favour of "epoll" for containers that restrict io_uring via seccomp.
+io_uring = ["dep:rustix-uring"]
+# Enable the epoll backend (Linux only). Useful in containers where io_uring
+# is unavailable. Mutually exclusive with "io_uring".
+epoll = []
 # Enable IoUring feature which optimizes the uring hot path at the tradeoff of
 # requiring the same thread to call io_uring_enter() exclusively, the ring
 # cannot be shared across threads. Requires Linux 6.0 or later.

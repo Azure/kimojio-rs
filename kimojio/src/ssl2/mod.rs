@@ -12,10 +12,8 @@
 
 use std::io::{Read, Write};
 
+use crate::Errno;
 use openssl::ssl::ShutdownResult;
-use rustix_uring::Errno;
-
-use crate::{AsyncStreamRead, AsyncStreamWrite};
 
 #[cfg(test)]
 mod e2e_tests;
@@ -250,10 +248,9 @@ mod tests {
     use std::{ffi::CString, os::fd::OwnedFd, time::Instant};
 
     use openssl::ssl::{ShutdownResult, SslAcceptor, SslConnector, SslVersion};
-    use rustix_uring::Errno;
 
     use crate::{
-        AsyncStreamRead, AsyncStreamWrite, OwnedFdStream,
+        AsyncStreamRead, AsyncStreamWrite, Errno, OwnedFdStream,
         operations::spawn_task,
         pipe::bipipe,
         ssl2::SslStream,

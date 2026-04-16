@@ -53,12 +53,12 @@ pub fn pipe() -> Result<(OwnedFd, OwnedFd), Errno> {
 mod test {
     use std::{ffi::c_void, io::IoSlice};
 
-    #[cfg(feature = "io_uring")]
+    #[cfg(io_uring_backend)]
     use rustix::io_uring::iovec;
 
     use crate::{operations, pipe::pipe};
 
-    #[cfg(feature = "io_uring")]
+    #[cfg(io_uring_backend)]
     #[crate::test]
     async fn pipe_test() {
         let (read, write) = pipe().unwrap();

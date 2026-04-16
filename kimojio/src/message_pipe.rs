@@ -1,12 +1,12 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 use crate::pointer_buffer::IdPointerMsg;
-#[cfg(feature = "io_uring")]
+#[cfg(io_uring_backend)]
 use crate::{CompletionResources, io_type::IOType, pointer_buffer::pointer_from_buffer_ref};
 use crate::{Errno, OwnedFd, operations, pointer_from_buffer, pointer_to_buffer};
-#[cfg(feature = "io_uring")]
+#[cfg(io_uring_backend)]
 use futures::future::FusedFuture;
-#[cfg(feature = "io_uring")]
+#[cfg(io_uring_backend)]
 use std::{cell::RefCell, future::Future, rc::Rc};
 use std::{marker::PhantomData, time::Duration};
 
@@ -100,14 +100,14 @@ impl<T: Send, R: Send> MessagePipe<T, R> {
     }
 
     /// Receive a message on the pipe. This must be called from a uringruntime thread.
-    #[cfg(feature = "io_uring")]
+    #[cfg(io_uring_backend)]
     pub fn recv_message(&self) -> RecvMessageFuture<'_, R> {
         self.recv_message_with_timeout(None)
     }
 
     /// Receive a message on the pipe with an optional timeout.
     /// This must be called from a uringruntime thread.
-    #[cfg(feature = "io_uring")]
+    #[cfg(io_uring_backend)]
     pub fn recv_message_with_timeout(&self, timeout: Option<Duration>) -> RecvMessageFuture<'_, R> {
         use std::os::fd::AsRawFd;
         let buffer = Rc::new(RefCell::new([0u8; POINTER_SIZE]));
@@ -135,12 +135,12 @@ impl<T: Send, R: Send> MessagePipe<T, R> {
         }
     }
 
-    #[cfg(feature = "epoll")]
+    #[cfg(epoll_backend)]
     pub fn recv_message(&self) -> impl std::future::Future<Output = Result<Box<R>, crate::Errno>> {
         std::future::ready(Err(crate::Errno::from_raw_os_error(libc::ENOSYS)))
     }
 
-    #[cfg(feature = "epoll")]
+    #[cfg(epoll_backend)]
     pub fn recv_message_with_timeout(
         &self,
         _timeout: Option<Duration>,
@@ -214,14 +214,14 @@ impl<R: Send> MessagePipeReceiver<R> {
     }
 
     /// Receive a message on the pipe. This must be called from a uringruntime thread.
-    #[cfg(feature = "io_uring")]
+    #[cfg(io_uring_backend)]
     pub fn recv_message(&self) -> RecvMessageFuture<'_, R> {
         self.recv_message_with_timeout(None)
     }
 
     /// Receive a message on the pipe with an optional timeout.
     /// This must be called from a uringruntime thread.
-    #[cfg(feature = "io_uring")]
+    #[cfg(io_uring_backend)]
     pub fn recv_message_with_timeout(&self, timeout: Option<Duration>) -> RecvMessageFuture<'_, R> {
         use std::os::fd::AsRawFd;
         let buffer = Rc::new(RefCell::new([0u8; POINTER_SIZE]));
@@ -249,12 +249,12 @@ impl<R: Send> MessagePipeReceiver<R> {
         }
     }
 
-    #[cfg(feature = "epoll")]
+    #[cfg(epoll_backend)]
     pub fn recv_message(&self) -> impl std::future::Future<Output = Result<Box<R>, crate::Errno>> {
         std::future::ready(Err(crate::Errno::from_raw_os_error(libc::ENOSYS)))
     }
 
-    #[cfg(feature = "epoll")]
+    #[cfg(epoll_backend)]
     pub fn recv_message_with_timeout(
         &self,
         _timeout: Option<Duration>,
@@ -354,7 +354,7 @@ impl<T: Send> Clone for MessagePipeSender<T> {
     }
 }
 
-#[cfg(feature = "io_uring")]
+#[cfg(io_uring_backend)]
 pin_project_lite::pin_project! {
     pub struct RecvMessageFuture<'a, T> {
         #[pin]
@@ -364,7 +364,7 @@ pin_project_lite::pin_project! {
     }
 }
 
-#[cfg(feature = "io_uring")]
+#[cfg(io_uring_backend)]
 impl<'a, T> Future for RecvMessageFuture<'a, T> {
     type Output = Result<Box<T>, Errno>;
 
@@ -391,7 +391,7 @@ impl<'a, T> Future for RecvMessageFuture<'a, T> {
     }
 }
 
-#[cfg(feature = "io_uring")]
+#[cfg(io_uring_backend)]
 impl<'a, T> FusedFuture for RecvMessageFuture<'a, T> {
     fn is_terminated(&self) -> bool {
         self.fut.is_terminated()

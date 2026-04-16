@@ -13,17 +13,17 @@
 //!
 //! Exactly one backend must be enabled at a time (enforced by `build.rs`).
 
-#[cfg(feature = "io_uring")]
+#[cfg(io_uring_backend)]
 pub(crate) mod io_uring;
 
-#[cfg(feature = "epoll")]
+#[cfg(epoll_backend)]
 pub(crate) mod epoll;
 
-#[cfg(feature = "windows-iocp")]
+#[cfg(iocp_backend)]
 pub(crate) mod iocp;
 
 // Re-export the backend-specific ring and associated types so the rest of the
 // crate can import them from a single location without knowing which backend
 // is active.
-#[cfg(feature = "io_uring")]
+#[cfg(io_uring_backend)]
 pub(crate) use io_uring::{Cqe, IO_URING_SUBMISSION_ENTRIES, Ring, Sqe};

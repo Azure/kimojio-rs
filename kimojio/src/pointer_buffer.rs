@@ -49,7 +49,7 @@ pub unsafe fn pointer_from_buffer<T>(buf: [u8; POINTER_SIZE]) -> Box<T> {
 /// The buffer must have been created by a prior call to pointer_to_buffer.
 /// A given buffer must never be turned back into a pointer more than once.
 /// To avoid leaks it must be turned back into a pointer exactly one time.
-#[cfg(feature = "io_uring")]
+#[cfg(io_uring_backend)]
 pub unsafe fn pointer_from_buffer_ref<T>(buf: &[u8; POINTER_SIZE]) -> Box<T> {
     let buf = buf.as_ptr() as *const *mut T;
     // SAFETY: see pointer_to_buffer. This function should be

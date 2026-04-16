@@ -12,9 +12,10 @@ fn main() {
     let epoll = std::env::var("CARGO_FEATURE_EPOLL").is_ok();
     let iocp = std::env::var("CARGO_FEATURE_WINDOWS_IOCP").is_ok();
 
+    let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+
     let count = [io_uring, epoll, iocp].iter().filter(|&&b| b).count();
     if count == 0 {
-        let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
         if target_os == "linux" {
             eprintln!(
                 "cargo:warning=No I/O backend feature selected. \
@@ -32,6 +33,44 @@ fn main() {
              (io_uring, epoll, windows-iocp). Found {} enabled.",
             count
         );
+    }
+
+    // Declare the custom cfg aliases so rustc's check-cfg lint doesn't warn.
+    println!("cargo::rustc-check-cfg=cfg(io_uring_backend)");
+    println!("cargo::rustc-check-cfg=cfg(epoll_backend)");
+    println!("cargo::rustc-check-cfg=cfg(iocp_backend)");
+
+    // Emit backend cfg aliases gated on BOTH the feature AND the target OS.
+    // This prevents rustix_uring (Linux-only dep) from being referenced on Windows
+    // even when the io_uring feature is enabled via default features.
+    if io_uring {
+        if target_os == "linux" {
+            println!("cargo:rustc-cfg=io_uring_backend");
+        } else {
+            panic!(
+                "Feature 'io_uring' is Linux-only. \
+                 On non-Linux targets, build with: \
+                 --no-default-features --features windows-iocp"
+            );
+        }
+    }
+    if epoll {
+        if target_os == "linux" {
+            println!("cargo:rustc-cfg=epoll_backend");
+        } else {
+            panic!(
+                "Feature 'epoll' is Linux-only. \
+                 On non-Linux targets, build with: \
+                 --no-default-features --features windows-iocp"
+            );
+        }
+    }
+    if iocp {
+        if target_os == "windows" {
+            println!("cargo:rustc-cfg=iocp_backend");
+        } else {
+            panic!("Feature 'windows-iocp' is Windows-only.");
+        }
     }
 
     println!("cargo:rerun-if-changed=build.rs");

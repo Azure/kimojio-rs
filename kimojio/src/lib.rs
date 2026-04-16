@@ -26,7 +26,7 @@ pub(crate) mod backend;
 mod buffer_pipe;
 mod cancellation_token;
 pub mod configuration;
-#[cfg(feature = "epoll")]
+#[cfg(epoll_backend)]
 pub(crate) mod epoll_future;
 mod errors;
 mod handle_table;
@@ -37,7 +37,7 @@ pub mod operations;
 pub mod pipe;
 mod pointer_buffer;
 mod prefix_buffer;
-#[cfg(feature = "io_uring")]
+#[cfg(io_uring_backend)]
 pub(crate) mod ring_future;
 mod runtime;
 mod runtime_handle;
@@ -83,7 +83,7 @@ pub use message_pipe::{
     make_message_pipe_oneway, make_message_pipe_oneway_sync,
 };
 pub use mut_in_place_cell::MutInPlaceCell;
-#[cfg(feature = "io_uring")]
+#[cfg(io_uring_backend)]
 use operations::kernel_version;
 use pointer_buffer::{pointer_from_buffer, pointer_to_buffer};
 pub use prefix_buffer::{BufferView, OwnedBuffer, PrefixBuffer, StaticBuffer};
@@ -94,9 +94,9 @@ pub use runtime_handle::{
 };
 pub use rustix::fd::OwnedFd;
 pub use rustix::io::Errno;
-#[cfg(feature = "io_uring")]
+#[cfg(io_uring_backend)]
 use rustix::io_uring::io_uring_user_data;
-#[cfg(feature = "io_uring")]
+#[cfg(io_uring_backend)]
 use rustix_uring::opcode::AsyncCancel;
 use task::Task;
 pub use tracing::{EventEnvelope, Events, TraceConfiguration};
@@ -107,13 +107,13 @@ use crate::configuration::BusyPoll;
 
 pub use kimojio_macros::{main, test};
 
-#[cfg_attr(not(feature = "io_uring"), allow(dead_code))]
+#[cfg_attr(not(io_uring_backend), allow(dead_code))]
 enum CompletionState {
     /// The future is created but SQE is not yet submitted to the kernel
     Idle {
-        #[cfg(all(feature = "io_uring", feature = "io_uring_cmd"))]
+        #[cfg(all(io_uring_backend, feature = "io_uring_cmd"))]
         entry: Option<rustix_uring::squeue::Entry128>,
-        #[cfg(all(feature = "io_uring", not(feature = "io_uring_cmd")))]
+        #[cfg(all(io_uring_backend, not(feature = "io_uring_cmd")))]
         entry: Option<rustix_uring::squeue::Entry>,
         timespec: bool,
     },
@@ -127,18 +127,18 @@ enum CompletionState {
     /// The I/O is completed
     Completed {
         result: Result<u32, Errno>,
-        #[cfg(all(feature = "io_uring", feature = "io_uring_cmd"))]
+        #[cfg(all(io_uring_backend, feature = "io_uring_cmd"))]
         big_cqe: [u64; 2],
     },
     Terminated,
 }
 
-#[cfg_attr(not(feature = "io_uring"), allow(dead_code))]
+#[cfg_attr(not(io_uring_backend), allow(dead_code))]
 pub(crate) struct Completion {
     state: MutInPlaceCell<CompletionState>,
     owned_resources: CompletionResources,
     // memory for timeouts
-    #[cfg(feature = "io_uring")]
+    #[cfg(io_uring_backend)]
     timespec: rustix_uring::types::Timespec,
     tag: u32,
     task_index: u16,
@@ -148,7 +148,7 @@ pub(crate) struct Completion {
 #[allow(dead_code)]
 enum CompletionResources {
     None,
-    #[cfg(feature = "io_uring")]
+    #[cfg(io_uring_backend)]
     Timespec(rustix_uring::types::Timespec),
     Box(Box<dyn std::any::Any>),
     Rc(Rc<dyn std::any::Any>),
@@ -163,7 +163,7 @@ impl Completion {
                 // cancel immediately but skipping submission
                 *state = CompletionState::Completed {
                     result: Err(Errno::CANCELED),
-                    #[cfg(all(feature = "io_uring", feature = "io_uring_cmd"))]
+                    #[cfg(all(io_uring_backend, feature = "io_uring_cmd"))]
                     big_cqe: [0; 2],
                 };
                 false
@@ -179,7 +179,7 @@ impl Completion {
             CompletionState::Terminated | CompletionState::Completed { .. } => false,
         });
 
-        #[cfg(feature = "io_uring")]
+        #[cfg(io_uring_backend)]
         if should_cancel {
             let user_data_ptr = Rc::as_ptr(self) as *mut libc::c_void;
             let user_data = io_uring_user_data::from_ptr(user_data_ptr);
@@ -193,7 +193,7 @@ impl Completion {
                 task_state.stats.increment_in_flight_io(1);
             }
         }
-        #[cfg(not(feature = "io_uring"))]
+        #[cfg(not(io_uring_backend))]
         {
             let _ = should_cancel;
             let _ = task_state;
@@ -297,7 +297,7 @@ where
 {
     let mut runtime = Runtime::new(thread_index, configuration);
 
-    #[cfg(feature = "io_uring")]
+    #[cfg(io_uring_backend)]
     {
         let kernel_version = kernel_version();
         if kernel_version < (5, 15) {

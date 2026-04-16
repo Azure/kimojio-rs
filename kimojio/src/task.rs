@@ -14,7 +14,7 @@ use std::{
     thread::ThreadId,
 };
 
-#[cfg(feature = "io_uring")]
+#[cfg(io_uring_backend)]
 #[allow(unused_imports)]
 pub(crate) use crate::backend::{Cqe, IO_URING_SUBMISSION_ENTRIES, Ring, Sqe};
 
@@ -188,7 +188,7 @@ impl Task {
         new_completions
     }
 
-    #[cfg(feature = "io_uring")]
+    #[cfg(io_uring_backend)]
     pub(crate) fn register_io(&self, completion: &Rc<Completion>) {
         self.io_scope_completions.use_mut(|io_scope_completions| {
             if let Some(io_scope_completions) = io_scope_completions {
@@ -207,7 +207,7 @@ impl Task {
                 task_state.return_completion(completion);
             }
             // flush the added SQE
-            #[cfg(feature = "io_uring")]
+            #[cfg(io_uring_backend)]
             {
                 task_state = crate::runtime::submit_and_complete_io_all(task_state, true);
             }
@@ -397,11 +397,11 @@ pub struct TaskState {
     pub thread_id: ThreadId,
 
     // The I/O URing for this thread
-    #[cfg(feature = "io_uring")]
+    #[cfg(io_uring_backend)]
     pub ring: Ring,
 
     // The I/O URing for this thread (with IO Poll enabled)
-    #[cfg(feature = "io_uring")]
+    #[cfg(io_uring_backend)]
     pub ring_poll: Ring,
 
     pub(crate) trace_buffer: TraceBuffer,
@@ -441,11 +441,11 @@ pub struct TaskState {
     pub next_tag: u32,
 
     // probe is used to check if the kernel supports certain I/O uring operations
-    #[cfg(feature = "io_uring")]
+    #[cfg(io_uring_backend)]
     pub probe: rustix_uring::Probe,
 
     // The epoll driver for the epoll backend
-    #[cfg(feature = "epoll")]
+    #[cfg(epoll_backend)]
     pub epoll_driver: crate::backend::epoll::EpollDriver,
 
     // Boolean indicating if the event loop should continue to process new
@@ -466,19 +466,19 @@ thread_local! {
 
 impl TaskState {
     pub fn new() -> Self {
-        #[cfg(feature = "io_uring")]
+        #[cfg(io_uring_backend)]
         let ring = Ring::new(false);
-        #[cfg(feature = "io_uring")]
+        #[cfg(io_uring_backend)]
         let ring_poll = Ring::new(true);
-        #[cfg(feature = "io_uring")]
+        #[cfg(io_uring_backend)]
         let probe = ring.register_probe();
         Self {
             task_count: 0,
             last_ready_cpu: false,
             thread_id: std::thread::current().id(),
-            #[cfg(feature = "io_uring")]
+            #[cfg(io_uring_backend)]
             ring,
-            #[cfg(feature = "io_uring")]
+            #[cfg(io_uring_backend)]
             ring_poll,
             trace_buffer: TraceBuffer::default(),
             stats: URingStats::new(),
@@ -491,11 +491,11 @@ impl TaskState {
             completion_pool: VecDeque::new(),
             tasks: HandleTable::new(),
             completed_tasks: VecDeque::new(),
-            #[cfg(feature = "io_uring")]
+            #[cfg(io_uring_backend)]
             probe,
             keep_running: true,
             next_tag: 0,
-            #[cfg(feature = "epoll")]
+            #[cfg(epoll_backend)]
             epoll_driver: crate::backend::epoll::EpollDriver::new(),
             #[cfg(feature = "fault_injection")]
             fault: None,
@@ -523,7 +523,7 @@ impl TaskState {
         self.task_count
     }
 
-    #[cfg(feature = "io_uring")]
+    #[cfg(io_uring_backend)]
     #[inline(always)]
     pub fn get_completion_count(&mut self, iopoll: bool) -> usize {
         if iopoll {
@@ -533,7 +533,7 @@ impl TaskState {
         }
     }
 
-    #[cfg(feature = "io_uring")]
+    #[cfg(io_uring_backend)]
     #[inline(always)]
     pub fn get_next_cqe(&mut self, iopoll: bool) -> Option<Cqe> {
         if iopoll {
@@ -704,13 +704,13 @@ impl TaskState {
         }
     }
 
-    #[cfg(feature = "io_uring")]
+    #[cfg(io_uring_backend)]
     #[inline(always)]
     pub fn submit(&mut self, entries: &[Sqe]) {
         self.ring.submit(entries)
     }
 
-    #[cfg(feature = "io_uring")]
+    #[cfg(io_uring_backend)]
     #[inline(always)]
     pub fn submit_poll(&mut self, entries: &[Sqe]) {
         self.ring_poll.submit(entries)
@@ -817,7 +817,7 @@ impl TaskState {
         }
     }
 
-    #[cfg(feature = "io_uring")]
+    #[cfg(io_uring_backend)]
     pub(crate) fn new_completion(&mut self, completion: Completion) -> Rc<Completion> {
         if let Some(mut existing) = self.completion_pool.pop_front() {
             let ptr =

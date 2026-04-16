@@ -33,12 +33,12 @@
 use std::future::Future;
 use std::io::IoSlice;
 use std::marker::PhantomData;
-#[cfg(any(feature = "io_uring", feature = "epoll"))]
+#[cfg(any(io_uring_backend, epoll_backend))]
 use std::mem::size_of;
-#[cfg(feature = "io_uring")]
+#[cfg(io_uring_backend)]
 use std::mem::size_of_val;
 use std::net::SocketAddr;
-#[cfg(any(feature = "io_uring", feature = "epoll"))]
+#[cfg(any(io_uring_backend, epoll_backend))]
 use std::net::{SocketAddrV4, SocketAddrV6};
 use std::panic::AssertUnwindSafe;
 use std::pin::Pin;
@@ -48,50 +48,50 @@ use std::time::Instant;
 
 use futures::future::FusedFuture;
 use futures::{FutureExt, Stream, StreamExt};
-#[cfg(any(feature = "io_uring", feature = "epoll"))]
+#[cfg(any(io_uring_backend, epoll_backend))]
 use libc::{AF_INET, AF_INET6, AF_UNIX, sa_family_t, sockaddr_in, sockaddr_in6, sockaddr_un};
-#[cfg(feature = "io_uring")]
+#[cfg(io_uring_backend)]
 use rustix::fs::AtFlags;
-#[cfg(feature = "io_uring")]
+#[cfg(io_uring_backend)]
 use rustix::io_uring::{Mode, MsgHdr, SocketAddrOpaque, iovec};
 
 pub use rustix::fd::OwnedFd;
-#[cfg(feature = "epoll")]
+#[cfg(epoll_backend)]
 use rustix::fs::Mode;
-#[cfg(feature = "epoll")]
+#[cfg(epoll_backend)]
 pub use rustix::fs::OFlags;
-#[cfg(feature = "io_uring")]
+#[cfg(io_uring_backend)]
 pub use rustix::io_uring::Advice;
 pub use rustix::net::{AddressFamily, Protocol, SocketType, ipproto};
 pub use rustix::net::{RecvFlags, SendFlags, SocketAddrUnix};
-#[cfg(feature = "io_uring")]
+#[cfg(io_uring_backend)]
 pub use rustix_uring::types::{OFlags, Statx};
 
-#[cfg(feature = "io_uring")]
+#[cfg(io_uring_backend)]
 use crate::CompletionResources;
 use crate::async_event::TaskSource;
-#[cfg(feature = "epoll")]
+#[cfg(epoll_backend)]
 use crate::epoll_future::{
     EpollOwnedFdFuture as OwnedFdFuture, EpollUnitFuture as UnitFuture,
     EpollUsizeFuture as UsizeFuture,
 };
-#[cfg(feature = "io_uring")]
+#[cfg(io_uring_backend)]
 use crate::io_type::IOType;
-#[cfg(feature = "io_uring")]
+#[cfg(io_uring_backend)]
 use crate::ring_future::{OwnedFdFuture, UnitFuture, UsizeFuture};
 use crate::task::{IoScopeCompletions, Task, TaskReadyState, TaskState};
 use crate::task_ref::wake_task;
 use crate::tracing::Events;
 use crate::{CanceledError, Completion, CompletionState, Errno, TaskHandleError};
 use rustix::fd::AsFd;
-#[cfg(feature = "io_uring")]
+#[cfg(io_uring_backend)]
 use rustix::fd::AsRawFd;
-#[cfg(feature = "io_uring")]
+#[cfg(io_uring_backend)]
 use rustix_uring::{
     opcode,
     types::{Fd, Timespec},
 };
-#[cfg(feature = "io_uring")]
+#[cfg(io_uring_backend)]
 use std::mem::ManuallyDrop;
 use std::{ffi::CStr, time::Duration};
 
@@ -109,7 +109,7 @@ impl<T, R: Future<Output = Result<T, Errno>> + FusedFuture> OperationFuture<T> f
 /// This is equivalent to the `openat(2)` system call with `AT_FDCWD` as the directory fd.
 ///
 /// Returns a future that resolves to the opened file descriptor, or an error.
-#[cfg(feature = "io_uring")]
+#[cfg(io_uring_backend)]
 pub fn open(filename: &CStr, flags: OFlags, mode: Mode) -> OwnedFdFuture<'_> {
     let dirfd = Fd(libc::AT_FDCWD);
     OwnedFdFuture::new(
@@ -123,12 +123,12 @@ pub fn open(filename: &CStr, flags: OFlags, mode: Mode) -> OwnedFdFuture<'_> {
     )
 }
 
-#[cfg(feature = "epoll")]
+#[cfg(epoll_backend)]
 pub fn open<'a>(_filename: &'a CStr, _flags: OFlags, _mode: Mode) -> OwnedFdFuture<'a> {
     OwnedFdFuture::stub()
 }
 
-#[cfg(feature = "io_uring")]
+#[cfg(io_uring_backend)]
 /// Creates a hard link to an existing file.
 ///
 /// Creates a new hard link `newpath` that refers to the same file as `oldpath`.
@@ -145,7 +145,7 @@ pub fn link<'a>(oldpath: &'a CStr, newpath: &'a CStr) -> UnitFuture<'a> {
     )
 }
 
-#[cfg(feature = "io_uring")]
+#[cfg(io_uring_backend)]
 /// Creates a symbolic link.
 ///
 /// Creates a symbolic link at `linkpath` that points to `target`.
@@ -162,7 +162,7 @@ pub fn symlink<'a>(target: &'a CStr, linkpath: &'a CStr) -> UnitFuture<'a> {
     )
 }
 
-#[cfg(feature = "io_uring")]
+#[cfg(io_uring_backend)]
 /// Creates a new directory.
 ///
 /// Creates a new directory at `pathname` with the specified permissions.
@@ -181,7 +181,7 @@ pub fn mkdir(pathname: &CStr, mode: Mode) -> UnitFuture<'_> {
     )
 }
 
-#[cfg(feature = "io_uring")]
+#[cfg(io_uring_backend)]
 /// Removes an empty directory.
 ///
 /// Removes the directory at `pathname`. The directory must be empty.
@@ -200,7 +200,7 @@ pub fn rmdir(pathname: &CStr) -> UnitFuture<'_> {
     )
 }
 
-#[cfg(feature = "io_uring")]
+#[cfg(io_uring_backend)]
 /// Retrieves file status information for a path.
 ///
 /// Returns metadata about the file at `filename`, including size, permissions,
@@ -213,7 +213,7 @@ pub async fn stat(filename: &CStr) -> Result<Statx, Errno> {
     Ok(unsafe { statx.assume_init() })
 }
 
-#[cfg(feature = "io_uring")]
+#[cfg(io_uring_backend)]
 fn stat_internal<'a>(filename: &'a CStr, statx: *mut Statx) -> UnitFuture<'a> {
     let dirfd = Fd(libc::AT_FDCWD);
     UnitFuture::new(
@@ -224,7 +224,7 @@ fn stat_internal<'a>(filename: &'a CStr, statx: *mut Statx) -> UnitFuture<'a> {
     )
 }
 
-#[cfg(feature = "io_uring")]
+#[cfg(io_uring_backend)]
 /// Retrieves file status information for an open file descriptor.
 ///
 /// Returns metadata about the file referred to by `fd`, including size, permissions,
@@ -238,7 +238,7 @@ pub async fn fstat(fd: &impl AsFd) -> Result<Statx, Errno> {
     Ok(unsafe { statx.assume_init() })
 }
 
-#[cfg(feature = "io_uring")]
+#[cfg(io_uring_backend)]
 /// statx(2) - fstat
 /// AT_EMPTY_PATH: If pathname is an empty string, operate on the file referred to by dirfd
 fn fstat_internal<'a>(fd: &impl AsFd, statx: *mut Statx) -> UnitFuture<'a> {
@@ -250,7 +250,7 @@ fn fstat_internal<'a>(fd: &impl AsFd, statx: *mut Statx) -> UnitFuture<'a> {
     UnitFuture::new(statx_op, -1, None, IOType::Stat)
 }
 
-#[cfg(feature = "io_uring")]
+#[cfg(io_uring_backend)]
 /// Removes a file.
 ///
 /// Deletes the file at `filename`. This is equivalent to the `unlinkat(2)` system call.
@@ -267,7 +267,7 @@ pub fn unlink(filename: &CStr) -> UnitFuture<'_> {
     )
 }
 
-#[cfg(feature = "io_uring")]
+#[cfg(io_uring_backend)]
 /// Renames a file or directory.
 ///
 /// Moves or renames `oldpath` to `newpath`. If `newpath` already exists, it will be
@@ -284,7 +284,7 @@ pub fn rename<'a>(oldpath: &'a CStr, newpath: &'a CStr) -> UnitFuture<'a> {
     )
 }
 
-#[cfg(feature = "io_uring")]
+#[cfg(io_uring_backend)]
 /// Provides advice to the kernel about file access patterns.
 ///
 /// Announces an intention to access file data in a specific pattern, allowing the kernel
@@ -303,7 +303,7 @@ pub fn fadvise(fd: &impl AsFd, offset: u64, len: u64, advice: Advice) -> UnitFut
     )
 }
 
-#[cfg(feature = "io_uring")]
+#[cfg(io_uring_backend)]
 /// Provides advice to the kernel about memory access patterns.
 ///
 /// Announces an intention to access memory in a specific pattern, allowing the kernel
@@ -319,7 +319,7 @@ pub fn madvise(addr: *const libc::c_void, len: u64, advice: Advice) -> UnitFutur
     )
 }
 
-#[cfg(feature = "io_uring")]
+#[cfg(io_uring_backend)]
 /// Pre-allocates or deallocates space for a file.
 ///
 /// Manipulates the allocated disk space for the file. This can be used to pre-allocate
@@ -340,7 +340,7 @@ pub fn fallocate(fd: &impl AsFd, mode: i32, offset: u64, len: u64) -> UnitFuture
     )
 }
 
-#[cfg(feature = "io_uring")]
+#[cfg(io_uring_backend)]
 /// Creates a new socket.
 ///
 /// Creates a socket with the specified domain, type, and protocol. If the kernel supports
@@ -376,7 +376,7 @@ pub async fn socket(
     }
 }
 
-#[cfg(feature = "epoll")]
+#[cfg(epoll_backend)]
 pub async fn socket(
     domain: AddressFamily,
     socket_type: SocketType,
@@ -385,7 +385,7 @@ pub async fn socket(
     rustix::net::socket(domain, socket_type, protocol)
 }
 
-#[cfg(feature = "io_uring")]
+#[cfg(io_uring_backend)]
 /// Accepts an incoming connection on a listening socket.
 ///
 /// Extracts the first pending connection from the queue of pending connections
@@ -403,12 +403,12 @@ pub fn accept(fd: &impl AsFd) -> OwnedFdFuture<'_> {
     )
 }
 
-#[cfg(feature = "epoll")]
+#[cfg(epoll_backend)]
 pub fn accept(fd: &impl AsFd) -> OwnedFdFuture<'_> {
     OwnedFdFuture::new(fd)
 }
 
-#[cfg(feature = "io_uring")]
+#[cfg(io_uring_backend)]
 /// Shuts down part or all of a full-duplex connection.
 ///
 /// Causes all or part of a full-duplex connection on the socket to be shut down.
@@ -425,7 +425,7 @@ pub fn shutdown(fd: &impl AsFd, how: i32) -> UnitFuture<'_> {
     )
 }
 
-#[cfg(feature = "epoll")]
+#[cfg(epoll_backend)]
 pub fn shutdown(fd: &impl AsFd, how: i32) -> UnitFuture<'_> {
     let how = match how {
         libc::SHUT_RD => rustix::net::Shutdown::Read,
@@ -438,7 +438,7 @@ pub fn shutdown(fd: &impl AsFd, how: i32) -> UnitFuture<'_> {
     }
 }
 
-#[cfg(feature = "io_uring")]
+#[cfg(io_uring_backend)]
 /// Synchronizes a file's in-core state with storage.
 ///
 /// Transfers all modified data and metadata of the file to the underlying storage device.
@@ -450,7 +450,7 @@ pub fn fsync(fd: &impl AsFd) -> UnitFuture<'_> {
     UnitFuture::new(opcode::Fsync::new(Fd(fd)).build(), fd, None, IOType::Fsync)
 }
 
-#[cfg(feature = "io_uring")]
+#[cfg(io_uring_backend)]
 /// Synchronizes a range of a file's data with storage.
 ///
 /// Synchronizes a specific range of the file to the underlying storage device.
@@ -490,7 +490,7 @@ pub fn listen(fd: &impl AsFd, backlog: i32) -> Result<(), Errno> {
     rustix::net::listen(fd, backlog)
 }
 
-#[cfg(any(feature = "io_uring", feature = "epoll"))]
+#[cfg(any(io_uring_backend, epoll_backend))]
 fn sockaddr_from_socketaddr(addr: &SocketAddrV4) -> sockaddr_in {
     sockaddr_in {
         sin_addr: libc::in_addr {
@@ -502,7 +502,7 @@ fn sockaddr_from_socketaddr(addr: &SocketAddrV4) -> sockaddr_in {
     }
 }
 
-#[cfg(any(feature = "io_uring", feature = "epoll"))]
+#[cfg(any(io_uring_backend, epoll_backend))]
 fn sockaddr6_from_socketaddrv6(addr: &SocketAddrV6) -> sockaddr_in6 {
     sockaddr_in6 {
         sin6_addr: libc::in6_addr {
@@ -525,7 +525,7 @@ fn sockaddr6_from_socketaddrv6(addr: &SocketAddrV6) -> sockaddr_in6 {
 /// Will panic() if the address is neither a valid path nor a valid abstract
 /// name which can only happen in programmer error to construct a
 /// SocketAddrUnix that is not correctly initialized
-#[cfg(any(feature = "io_uring", feature = "epoll"))]
+#[cfg(any(io_uring_backend, epoll_backend))]
 fn sockaddr_from_socketaddr_unix(addr: &SocketAddrUnix) -> (sockaddr_un, usize) {
     #[cfg(target_arch = "x86_64")]
     let mut sun_path = [0i8; 108];
@@ -561,7 +561,7 @@ fn sockaddr_from_socketaddr_unix(addr: &SocketAddrUnix) -> (sockaddr_un, usize) 
     )
 }
 
-#[cfg(feature = "io_uring")]
+#[cfg(io_uring_backend)]
 /// Connects a Unix domain socket to a peer.
 ///
 /// Initiates a connection on the Unix domain socket to the address specified by `addr`.
@@ -580,7 +580,7 @@ pub async fn connect_unix(fd: &impl AsFd, addr: &SocketAddrUnix) -> Result<(), E
     )
     .await
 }
-#[cfg(feature = "epoll")]
+#[cfg(epoll_backend)]
 pub async fn connect_unix(fd: &impl AsFd, addr: &SocketAddrUnix) -> Result<(), Errno> {
     use std::os::fd::AsRawFd as _;
     let raw_fd = fd.as_fd().as_raw_fd();
@@ -605,7 +605,7 @@ pub async fn connect_unix(fd: &impl AsFd, addr: &SocketAddrUnix) -> Result<(), E
     epoll_connect_wait(raw_fd).await
 }
 
-#[cfg(feature = "io_uring")]
+#[cfg(io_uring_backend)]
 /// Connects a socket to a peer address.
 ///
 /// Initiates a connection on the socket to the address specified by `addr`.
@@ -641,7 +641,7 @@ pub async fn connect(fd: &impl AsFd, addr: &SocketAddr) -> Result<(), Errno> {
         }
     }
 }
-#[cfg(feature = "epoll")]
+#[cfg(epoll_backend)]
 pub async fn connect(fd: &impl AsFd, addr: &SocketAddr) -> Result<(), Errno> {
     use std::os::fd::AsRawFd as _;
     let raw_fd = fd.as_fd().as_raw_fd();
@@ -681,7 +681,7 @@ pub async fn connect(fd: &impl AsFd, addr: &SocketAddr) -> Result<(), Errno> {
 }
 
 /// Wait for a non-blocking connect to complete, then check SO_ERROR.
-#[cfg(feature = "epoll")]
+#[cfg(epoll_backend)]
 async fn epoll_connect_wait(raw_fd: std::os::fd::RawFd) -> Result<(), Errno> {
     let mut registered = false;
     futures::future::poll_fn(move |cx| {
@@ -718,7 +718,7 @@ async fn epoll_connect_wait(raw_fd: std::os::fd::RawFd) -> Result<(), Errno> {
     .await
 }
 
-#[cfg(feature = "io_uring")]
+#[cfg(io_uring_backend)]
 /// Writes data from multiple buffers to a file descriptor.
 ///
 /// Performs a scatter-gather write, writing the contents of multiple buffers
@@ -733,7 +733,7 @@ pub fn writev<'a>(
 ) -> ErrnoOrFuture<UsizeFuture<'a>> {
     writev_with_deadline(fd, iovec, offset, None)
 }
-#[cfg(feature = "epoll")]
+#[cfg(epoll_backend)]
 pub fn writev<'a>(
     _fd: &impl AsFd,
     _iovec: &'a [IoSlice<'_>],
@@ -744,7 +744,7 @@ pub fn writev<'a>(
     }
 }
 
-#[cfg(feature = "io_uring")]
+#[cfg(io_uring_backend)]
 /// Writes data from multiple buffers with a deadline.
 ///
 /// Like [`writev`], but with an optional deadline. If the operation does not complete
@@ -778,7 +778,7 @@ pub fn writev_with_deadline<'a>(
         fut: writev_with_timeout(fd, iovec, offset, timeout),
     }
 }
-#[cfg(feature = "epoll")]
+#[cfg(epoll_backend)]
 pub fn writev_with_deadline<'a>(
     _fd: &impl AsFd,
     _iovec: &'a [IoSlice<'_>],
@@ -790,7 +790,7 @@ pub fn writev_with_deadline<'a>(
     }
 }
 
-#[cfg(feature = "io_uring")]
+#[cfg(io_uring_backend)]
 /// Writes data from multiple buffers with a timeout.
 ///
 /// Like [`writev`], but with an optional timeout duration. If the operation does not
@@ -816,7 +816,7 @@ pub fn writev_with_timeout<'a>(
     )
 }
 
-#[cfg(feature = "io_uring")]
+#[cfg(io_uring_backend)]
 /// Writes data from a buffer to a file descriptor.
 ///
 /// Writes the contents of `buf` to the file descriptor at the current position.
@@ -826,14 +826,14 @@ pub fn writev_with_timeout<'a>(
 pub fn write<'a>(fd: &impl AsFd, buf: &'a [u8]) -> ErrnoOrFuture<UsizeFuture<'a>> {
     write_with_deadline(fd, buf, None)
 }
-#[cfg(feature = "epoll")]
+#[cfg(epoll_backend)]
 pub fn write<'a>(fd: &impl AsFd, buf: &'a [u8]) -> ErrnoOrFuture<UsizeFuture<'a>> {
     ErrnoOrFuture::Future {
         fut: UsizeFuture::write(fd, buf),
     }
 }
 
-#[cfg(feature = "io_uring")]
+#[cfg(io_uring_backend)]
 /// Writes data from a buffer with a deadline.
 ///
 /// Like [`write`], but with an optional deadline. If the operation does not complete
@@ -866,7 +866,7 @@ pub fn write_with_deadline<'a>(
         fut: write_with_timeout(fd, buf, timeout),
     }
 }
-#[cfg(feature = "epoll")]
+#[cfg(epoll_backend)]
 pub fn write_with_deadline<'a>(
     fd: &impl AsFd,
     buf: &'a [u8],
@@ -877,7 +877,7 @@ pub fn write_with_deadline<'a>(
     }
 }
 
-#[cfg(feature = "io_uring")]
+#[cfg(io_uring_backend)]
 /// Writes data from a buffer with a timeout.
 ///
 /// Like [`write`], but with an optional timeout duration. If the operation does not
@@ -899,7 +899,7 @@ pub fn write_with_timeout<'a>(
         IOType::Write,
     )
 }
-#[cfg(feature = "epoll")]
+#[cfg(epoll_backend)]
 pub fn write_with_timeout<'a>(
     fd: &impl AsFd,
     buf: &'a [u8],
@@ -908,7 +908,7 @@ pub fn write_with_timeout<'a>(
     UsizeFuture::write(fd, buf)
 }
 
-#[cfg(feature = "io_uring")]
+#[cfg(io_uring_backend)]
 /// Sends data on a socket.
 ///
 /// Transmits data from `buf` to the connected peer on the socket.
@@ -931,7 +931,7 @@ pub fn send<'a>(
         IOType::Send,
     )
 }
-#[cfg(feature = "epoll")]
+#[cfg(epoll_backend)]
 pub fn send<'a>(
     fd: &impl AsFd,
     buf: &'a [u8],
@@ -941,7 +941,7 @@ pub fn send<'a>(
     UsizeFuture::send(fd, buf, flags)
 }
 
-#[cfg(feature = "io_uring")]
+#[cfg(io_uring_backend)]
 /// Receives data from a socket.
 ///
 /// Receives data from the connected peer into `buf`.
@@ -964,7 +964,7 @@ pub fn recv<'a>(
         IOType::Recv,
     )
 }
-#[cfg(feature = "epoll")]
+#[cfg(epoll_backend)]
 pub fn recv<'a>(
     fd: &impl AsFd,
     buf: &'a mut [u8],
@@ -974,7 +974,7 @@ pub fn recv<'a>(
     UsizeFuture::recv(fd, buf, flags)
 }
 
-#[cfg(feature = "io_uring")]
+#[cfg(io_uring_backend)]
 /// Receives a message from a socket.
 ///
 /// Receives a message from the socket, optionally including ancillary data.
@@ -999,7 +999,7 @@ pub fn recvmsg<'a>(
     )
 }
 
-#[cfg(feature = "io_uring")]
+#[cfg(io_uring_backend)]
 /// Sends a message on a socket.
 ///
 /// Sends a message on the socket, optionally including ancillary data.
@@ -1023,7 +1023,7 @@ pub fn sendmsg<'a>(
     )
 }
 
-#[cfg(feature = "io_uring")]
+#[cfg(io_uring_backend)]
 /// Writes data from a buffer to a file descriptor at a specific offset.
 ///
 /// This performs a positioned write (pwrite), writing the contents of `buf` to
@@ -1054,7 +1054,7 @@ pub fn pwrite_polled<'a>(
     )
 }
 
-#[cfg(feature = "io_uring")]
+#[cfg(io_uring_backend)]
 /// Writes data from a buffer to a file descriptor at a specific offset.
 ///
 /// This performs a positioned write (pwrite), writing the contents of `buf` to
@@ -1068,7 +1068,7 @@ pub fn pwrite<'a>(fd: &impl AsFd, buf: &'a [u8], offset: u64) -> UsizeFuture<'a>
     pwrite_polled(fd, buf, offset, false)
 }
 
-#[cfg(feature = "io_uring")]
+#[cfg(io_uring_backend)]
 /// Reads data from a file descriptor into multiple buffers.
 ///
 /// Performs a scatter-gather read, reading data from the file descriptor into
@@ -1088,7 +1088,7 @@ pub fn readv<'a>(fd: &impl AsFd, iovec: &'a [iovec], offset: Option<u64>) -> Usi
     )
 }
 
-#[cfg(feature = "io_uring")]
+#[cfg(io_uring_backend)]
 /// Reads data from a file descriptor into a buffer.
 ///
 /// Reads data from the file descriptor at the current position into `buf`.
@@ -1098,12 +1098,12 @@ pub fn readv<'a>(fd: &impl AsFd, iovec: &'a [iovec], offset: Option<u64>) -> Usi
 pub fn read<'a>(fd: &impl AsFd, buf: &'a mut [u8]) -> UsizeFuture<'a> {
     read_with_timeout(fd, buf, None)
 }
-#[cfg(feature = "epoll")]
+#[cfg(epoll_backend)]
 pub fn read<'a>(fd: &impl AsFd, buf: &'a mut [u8]) -> UsizeFuture<'a> {
     UsizeFuture::read(fd, buf)
 }
 
-#[cfg(feature = "io_uring")]
+#[cfg(io_uring_backend)]
 /// Reads data from a file descriptor with a deadline.
 ///
 /// Like [`read`], but with an optional deadline. If the operation does not complete
@@ -1136,7 +1136,7 @@ pub fn read_with_deadline<'a>(
         fut: read_with_timeout(fd, buf, timeout),
     }
 }
-#[cfg(feature = "epoll")]
+#[cfg(epoll_backend)]
 pub fn read_with_deadline<'a>(
     fd: &impl AsFd,
     buf: &'a mut [u8],
@@ -1147,7 +1147,7 @@ pub fn read_with_deadline<'a>(
     }
 }
 
-#[cfg(feature = "io_uring")]
+#[cfg(io_uring_backend)]
 /// Reads data from a file descriptor with a timeout.
 ///
 /// Like [`read`], but with an optional timeout duration. If the operation does not
@@ -1169,7 +1169,7 @@ pub fn read_with_timeout<'a>(
         IOType::Read,
     )
 }
-#[cfg(feature = "epoll")]
+#[cfg(epoll_backend)]
 pub fn read_with_timeout<'a>(
     fd: &impl AsFd,
     buf: &'a mut [u8],
@@ -1178,7 +1178,7 @@ pub fn read_with_timeout<'a>(
     UsizeFuture::read(fd, buf)
 }
 
-#[cfg(feature = "io_uring")]
+#[cfg(io_uring_backend)]
 /// Reads data from a file descriptor at a specific offset into a buffer.
 ///
 /// This performs a positioned read (pread), reading from the file descriptor `fd`
@@ -1209,7 +1209,7 @@ pub fn pread_polled<'a>(
     )
 }
 
-#[cfg(feature = "io_uring")]
+#[cfg(io_uring_backend)]
 /// Reads data from a file descriptor at a specific offset into a buffer.
 ///
 /// This performs a positioned read (pread), reading from the file descriptor `fd`
@@ -1221,7 +1221,7 @@ pub fn pread<'a>(fd: &impl AsFd, buf: &'a mut [u8], offset: u64) -> UsizeFuture<
     pread_polled(fd, buf, offset, false)
 }
 
-#[cfg(feature = "io_uring")]
+#[cfg(io_uring_backend)]
 /// Closes a file descriptor.
 ///
 /// Closes the file descriptor, releasing any associated resources. The file descriptor
@@ -1234,13 +1234,13 @@ pub fn close(fd: OwnedFd) -> UnitFuture<'static> {
     let fd = fd.as_fd().as_raw_fd();
     UnitFuture::new(opcode::Close::new(Fd(fd)).build(), fd, None, IOType::Close)
 }
-#[cfg(feature = "epoll")]
+#[cfg(epoll_backend)]
 pub fn close(fd: OwnedFd) -> UnitFuture<'static> {
     drop(fd); // OwnedFd::drop closes the file descriptor
     UnitFuture::ready_ok()
 }
 
-#[cfg(feature = "io_uring")]
+#[cfg(io_uring_backend)]
 /// Performs a no-operation.
 ///
 /// Submits a no-op entry to io_uring. This can be useful for testing or for
@@ -1250,7 +1250,7 @@ pub fn close(fd: OwnedFd) -> UnitFuture<'static> {
 pub fn nop() -> UnitFuture<'static> {
     UnitFuture::new(opcode::Nop::new().build(), -1, None, IOType::Nop)
 }
-#[cfg(feature = "epoll")]
+#[cfg(epoll_backend)]
 pub fn nop() -> UnitFuture<'static> {
     UnitFuture::ready_ok()
 }
@@ -1461,7 +1461,7 @@ pub fn sleep(duration: Duration) -> SleepFuture<'static> {
         }
     }
 
-    #[cfg(feature = "io_uring")]
+    #[cfg(io_uring_backend)]
     {
         let timespec = Box::new(Timespec::from(duration));
         let entry = opcode::Timeout::new(timespec.as_ref()).build();
@@ -1487,7 +1487,7 @@ pub fn sleep(duration: Duration) -> SleepFuture<'static> {
         }
     }
 
-    #[cfg(feature = "epoll")]
+    #[cfg(epoll_backend)]
     {
         use rustix::time::{Itimerspec, TimerfdClockId, TimerfdFlags, TimerfdTimerFlags, Timespec};
         let timer_fd = rustix::time::timerfd_create(
@@ -2064,7 +2064,7 @@ pub fn io_scope_cancel() {
     let task = task_state.get_current_task();
 
     // 1. ensure all I/O is submitted
-    #[cfg(feature = "io_uring")]
+    #[cfg(io_uring_backend)]
     let task_state = crate::runtime::submit_and_complete_io_all(task_state, true);
 
     task.cancel_io_scope_completions(task_state);
@@ -2093,7 +2093,7 @@ fn io_scope_cancel_and_wait_internal(new_io_scope_completions: Option<IoScopeCom
     // now we have to wait until all gathered completions are done.
     if let Some(mut gathered_completions) = gathered_completions {
         // 1. ensure all I/O is submitted
-        #[cfg(feature = "io_uring")]
+        #[cfg(io_uring_backend)]
         {
             task_state = crate::runtime::submit_and_complete_io_all(task_state, true);
         }
@@ -2115,7 +2115,7 @@ fn io_scope_cancel_and_wait_internal(new_io_scope_completions: Option<IoScopeCom
         }
 
         // 3. wait for them to finish.
-        #[cfg(feature = "io_uring")]
+        #[cfg(io_uring_backend)]
         while !gathered_completions.completions.is_empty() {
             task_state = crate::runtime::submit_and_complete_io_all(task_state, true);
 
@@ -2230,7 +2230,7 @@ pub trait IsIoPoll: FusedFuture {
     fn is_io_poll(&self) -> bool;
 }
 
-#[cfg(feature = "io_uring")]
+#[cfg(io_uring_backend)]
 /// `submit` wraps a future and ensures that it is submitted to the kernel
 /// immediately when it is polled without waiting for other tasks to be polled.
 /// This is useful for ensuring minimum possible latency at the expense of
@@ -2256,7 +2256,7 @@ pub fn submit<F: IsIoPoll>(fut: F) -> SubmitFuture<F> {
     }
 }
 
-#[cfg(feature = "io_uring")]
+#[cfg(io_uring_backend)]
 pin_project_lite::pin_project! {
     /// SubmitFuture wraps a future, and if it returns Pending when first polled,
     /// immediately submits any pending SQE to the kernel without waiting for
@@ -2267,7 +2267,7 @@ pin_project_lite::pin_project! {
     }
 }
 
-#[cfg(feature = "io_uring")]
+#[cfg(io_uring_backend)]
 impl<F: IsIoPoll> Future for SubmitFuture<F> {
     type Output = F::Output;
 
@@ -2559,7 +2559,7 @@ pub fn virtual_clock_has_idle_advance() -> bool {
         .has_idle_advance_fn()
 }
 
-#[cfg(all(test, feature = "io_uring"))]
+#[cfg(all(test, io_uring_backend))]
 mod test {
     use core::panic;
     use futures::future::join_all;

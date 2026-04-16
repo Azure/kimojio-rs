@@ -149,17 +149,15 @@ impl EpollDriver {
                 let flags = event.flags;
                 if flags.intersects(
                     epoll::EventFlags::IN | epoll::EventFlags::HUP | epoll::EventFlags::ERR,
-                ) {
-                    if let Some(waker) = w.read_waker.take() {
-                        wakers.push(waker);
-                    }
+                ) && let Some(waker) = w.read_waker.take()
+                {
+                    wakers.push(waker);
                 }
                 if flags.intersects(
                     epoll::EventFlags::OUT | epoll::EventFlags::HUP | epoll::EventFlags::ERR,
-                ) {
-                    if let Some(waker) = w.write_waker.take() {
-                        wakers.push(waker);
-                    }
+                ) && let Some(waker) = w.write_waker.take()
+                {
+                    wakers.push(waker);
                 }
                 if w.read_waker.is_none() && w.write_waker.is_none() {
                     self.wakers.remove(&fd);

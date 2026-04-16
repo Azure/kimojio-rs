@@ -188,6 +188,7 @@ impl Task {
         new_completions
     }
 
+    #[cfg(feature = "io_uring")]
     pub(crate) fn register_io(&self, completion: &Rc<Completion>) {
         self.io_scope_completions.use_mut(|io_scope_completions| {
             if let Some(io_scope_completions) = io_scope_completions {
@@ -816,6 +817,7 @@ impl TaskState {
         }
     }
 
+    #[cfg(feature = "io_uring")]
     pub(crate) fn new_completion(&mut self, completion: Completion) -> Rc<Completion> {
         if let Some(mut existing) = self.completion_pool.pop_front() {
             let ptr =

@@ -107,6 +107,7 @@ use crate::configuration::BusyPoll;
 
 pub use kimojio_macros::{main, test};
 
+#[cfg_attr(not(feature = "io_uring"), allow(dead_code))]
 enum CompletionState {
     /// The future is created but SQE is not yet submitted to the kernel
     Idle {
@@ -132,6 +133,7 @@ enum CompletionState {
     Terminated,
 }
 
+#[cfg_attr(not(feature = "io_uring"), allow(dead_code))]
 pub(crate) struct Completion {
     state: MutInPlaceCell<CompletionState>,
     owned_resources: CompletionResources,
@@ -192,7 +194,10 @@ impl Completion {
             }
         }
         #[cfg(not(feature = "io_uring"))]
-        let _ = should_cancel;
+        {
+            let _ = should_cancel;
+            let _ = task_state;
+        }
     }
 }
 

@@ -35,7 +35,9 @@ use std::io::IoSlice;
 use std::marker::PhantomData;
 #[cfg(feature = "io_uring")]
 use std::mem::{size_of, size_of_val};
-use std::net::{SocketAddr, SocketAddrV6};
+use std::net::SocketAddr;
+#[cfg(feature = "io_uring")]
+use std::net::{SocketAddrV4, SocketAddrV6};
 use std::panic::AssertUnwindSafe;
 use std::pin::Pin;
 use std::rc::Rc;
@@ -44,6 +46,7 @@ use std::time::Instant;
 
 use futures::future::FusedFuture;
 use futures::{FutureExt, Stream, StreamExt};
+#[cfg(feature = "io_uring")]
 use libc::{AF_INET, AF_INET6, AF_UNIX, sa_family_t, sockaddr_in, sockaddr_in6, sockaddr_un};
 #[cfg(feature = "io_uring")]
 use rustix::fs::AtFlags;
@@ -88,7 +91,7 @@ use rustix_uring::{
 };
 #[cfg(feature = "io_uring")]
 use std::mem::ManuallyDrop;
-use std::{ffi::CStr, net::SocketAddrV4, time::Duration};
+use std::{ffi::CStr, time::Duration};
 
 #[cfg(feature = "io_uring_cmd")]
 use crate::ring_future::UringCmdFuture;
@@ -477,6 +480,7 @@ pub fn listen(fd: &impl AsFd, backlog: i32) -> Result<(), Errno> {
     rustix::net::listen(fd, backlog)
 }
 
+#[cfg(feature = "io_uring")]
 fn sockaddr_from_socketaddr(addr: &SocketAddrV4) -> sockaddr_in {
     sockaddr_in {
         sin_addr: libc::in_addr {
@@ -488,6 +492,7 @@ fn sockaddr_from_socketaddr(addr: &SocketAddrV4) -> sockaddr_in {
     }
 }
 
+#[cfg(feature = "io_uring")]
 fn sockaddr6_from_socketaddrv6(addr: &SocketAddrV6) -> sockaddr_in6 {
     sockaddr_in6 {
         sin6_addr: libc::in6_addr {
@@ -510,6 +515,7 @@ fn sockaddr6_from_socketaddrv6(addr: &SocketAddrV6) -> sockaddr_in6 {
 /// Will panic() if the address is neither a valid path nor a valid abstract
 /// name which can only happen in programmer error to construct a
 /// SocketAddrUnix that is not correctly initialized
+#[cfg(feature = "io_uring")]
 fn sockaddr_from_socketaddr_unix(addr: &SocketAddrUnix) -> (sockaddr_un, usize) {
     #[cfg(target_arch = "x86_64")]
     let mut sun_path = [0i8; 108];
@@ -566,7 +572,7 @@ pub async fn connect_unix(fd: &impl AsFd, addr: &SocketAddrUnix) -> Result<(), E
 }
 #[cfg(feature = "epoll")]
 pub async fn connect_unix(_fd: &impl AsFd, _addr: &SocketAddrUnix) -> Result<(), Errno> {
-    Err(Errno::NOSYS)
+    unimplemented!("connect_unix not yet implemented for epoll backend")
 }
 
 #[cfg(feature = "io_uring")]
@@ -607,7 +613,7 @@ pub async fn connect(fd: &impl AsFd, addr: &SocketAddr) -> Result<(), Errno> {
 }
 #[cfg(feature = "epoll")]
 pub async fn connect(_fd: &impl AsFd, _addr: &SocketAddr) -> Result<(), Errno> {
-    Err(Errno::NOSYS)
+    unimplemented!("connect not yet implemented for epoll backend")
 }
 
 #[cfg(feature = "io_uring")]
@@ -1926,14 +1932,12 @@ pub async fn io_scope_drain_futures<Acc, T, E>(
 /// This does not wait for the I/O to complete, so the caller should
 /// continue to poll the canceled tasks until they are done.
 pub fn io_scope_cancel() {
-    let mut task_state = TaskState::get();
+    let task_state = TaskState::get();
     let task = task_state.get_current_task();
 
     // 1. ensure all I/O is submitted
     #[cfg(feature = "io_uring")]
-    {
-        task_state = crate::runtime::submit_and_complete_io_all(task_state, true);
-    }
+    let task_state = crate::runtime::submit_and_complete_io_all(task_state, true);
 
     task.cancel_io_scope_completions(task_state);
 }
@@ -2427,7 +2431,7 @@ pub fn virtual_clock_has_idle_advance() -> bool {
         .has_idle_advance_fn()
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "io_uring"))]
 mod test {
     use core::panic;
     use futures::future::join_all;

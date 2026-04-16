@@ -80,6 +80,7 @@ fn poll_task(task: Rc<Task>, mut task_state: TaskStateCellRef<'_>) -> TaskStateC
     task_state
 }
 
+#[cfg(feature = "io_uring")]
 struct RingEventTraceInfo {
     start_time: u64,
     ring_tag: u32,

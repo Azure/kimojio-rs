@@ -65,7 +65,7 @@ impl<'a> IocpUnitFuture<'a> {
 
     /// Perform a synchronous shutdown and wrap the result.
     pub fn shutdown(fd: &impl AsFd, how: rustix::net::Shutdown) -> Self {
-        let result = rustix::net::shutdown(fd.as_fd(), how).map_err(Into::into);
+        let result = rustix::net::shutdown(fd.as_fd(), how);
         Self {
             inner: UnitInner::Ready(result),
             terminated: false,

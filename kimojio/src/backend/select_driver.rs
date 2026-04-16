@@ -88,20 +88,18 @@ impl SelectDriver {
             if pollfds
                 .iter()
                 .any(|p| p.fd == fd as SOCKET && p.revents != 0)
+                && let Some(w) = self.read_wakers.remove(&fd)
             {
-                if let Some(w) = self.read_wakers.remove(&fd) {
-                    wakers.push(w);
-                }
+                wakers.push(w);
             }
         }
         for fd in write_fds {
             if pollfds
                 .iter()
                 .any(|p| p.fd == fd as SOCKET && p.revents != 0)
+                && let Some(w) = self.write_wakers.remove(&fd)
             {
-                if let Some(w) = self.write_wakers.remove(&fd) {
-                    wakers.push(w);
-                }
+                wakers.push(w);
             }
         }
 

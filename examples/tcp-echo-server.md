@@ -20,6 +20,11 @@ Or run directly:
 cargo run --release -p examples --bin tcp-echo-server -- --help
 ```
 
+> **Note:** When cross-compiling to Linux (e.g., from Windows) without the cross-compile toolchain, you can still check the code compiles cleanly with:
+> ```bash
+> cargo clippy -p examples --bin tcp-echo-server --target x86_64-unknown-linux-gnu --no-default-features --features io_uring
+> ```
+
 ## Running
 
 ```bash

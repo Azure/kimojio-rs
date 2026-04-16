@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use rustix_uring::Errno;
+use crate::Errno;
 
 /// An error that is returned when attempting to receive a message from a
 /// channel that has been closed.

@@ -17,6 +17,9 @@
 #[cfg(feature = "io_uring")]
 pub(crate) mod io_uring;
 
+#[cfg(feature = "epoll")]
+pub(crate) mod epoll;
+
 // Re-export the backend-specific ring and associated types so the rest of the
 // crate can import them from a single location without knowing which backend
 // is active.

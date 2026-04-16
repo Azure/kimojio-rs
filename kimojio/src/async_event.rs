@@ -20,12 +20,12 @@
 //! }
 //! ```
 
+use crate::Errno;
 use crate::task::{Task, TaskReadyState, TaskState};
 use crate::tracing::Events;
 use crate::{CanceledError, MutInPlaceCell, TimeoutError, operations};
 use futures::future::FusedFuture;
 use intrusive_collections::{LinkedList, LinkedListLink, intrusive_adapter};
-use rustix_uring::Errno;
 use std::cell::Cell;
 use std::future::Future;
 use std::pin::Pin;

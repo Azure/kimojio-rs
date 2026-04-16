@@ -26,6 +26,8 @@ pub(crate) mod backend;
 mod buffer_pipe;
 mod cancellation_token;
 pub mod configuration;
+#[cfg(feature = "epoll")]
+pub(crate) mod epoll_future;
 mod errors;
 mod handle_table;
 pub mod io_type;
@@ -35,6 +37,7 @@ pub mod operations;
 pub mod pipe;
 mod pointer_buffer;
 mod prefix_buffer;
+#[cfg(feature = "io_uring")]
 pub(crate) mod ring_future;
 mod runtime;
 mod runtime_handle;
@@ -80,6 +83,7 @@ pub use message_pipe::{
     make_message_pipe_oneway, make_message_pipe_oneway_sync,
 };
 pub use mut_in_place_cell::MutInPlaceCell;
+#[cfg(feature = "io_uring")]
 use operations::kernel_version;
 use pointer_buffer::{pointer_from_buffer, pointer_to_buffer};
 pub use prefix_buffer::{BufferView, OwnedBuffer, PrefixBuffer, StaticBuffer};
@@ -286,15 +290,19 @@ pub fn run_with_configuration<Fut>(
 where
     Fut: Future + 'static,
 {
-    let kernel_version = kernel_version();
-    if kernel_version < (5, 15) {
-        panic!(
-            "The minimum supported kernel version is 5.15, but we have found {}.{}. Please upgrade your kernel. If you are using WSL, you may need to run 'WSL --update'.",
-            kernel_version.0, kernel_version.1
-        );
+    let mut runtime = Runtime::new(thread_index, configuration);
+
+    #[cfg(feature = "io_uring")]
+    {
+        let kernel_version = kernel_version();
+        if kernel_version < (5, 15) {
+            panic!(
+                "The minimum supported kernel version is 5.15, but we have found {}.{}. Please upgrade your kernel. If you are using WSL, you may need to run 'WSL --update'.",
+                kernel_version.0, kernel_version.1
+            );
+        }
     }
 
-    let mut runtime = Runtime::new(thread_index, configuration);
     runtime.block_on(main)
 }
 

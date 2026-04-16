@@ -206,7 +206,10 @@ impl Task {
                 task_state.return_completion(completion);
             }
             // flush the added SQE
-            task_state = crate::runtime::submit_and_complete_io_all(task_state, true);
+            #[cfg(feature = "io_uring")]
+            {
+                task_state = crate::runtime::submit_and_complete_io_all(task_state, true);
+            }
 
             for wait in io_scope_completions.waits.drain(..) {
                 wait.canceled.set(true);
@@ -401,7 +404,6 @@ pub struct TaskState {
     pub ring_poll: Ring,
 
     pub(crate) trace_buffer: TraceBuffer,
-
     // Statistics for this thread (TODO replace with trace buffer analysis)
     pub stats: URingStats,
 
@@ -440,6 +442,10 @@ pub struct TaskState {
     // probe is used to check if the kernel supports certain I/O uring operations
     #[cfg(feature = "io_uring")]
     pub probe: rustix_uring::Probe,
+
+    // The epoll driver for the epoll backend
+    #[cfg(feature = "epoll")]
+    pub epoll_driver: crate::backend::epoll::EpollDriver,
 
     // Boolean indicating if the event loop should continue to process new
     // events or immediately terminate. Used internally to implement shutdown
@@ -488,6 +494,8 @@ impl TaskState {
             probe,
             keep_running: true,
             next_tag: 0,
+            #[cfg(feature = "epoll")]
+            epoll_driver: crate::backend::epoll::EpollDriver::new(),
             #[cfg(feature = "fault_injection")]
             fault: None,
             #[cfg(feature = "virtual-clock")]

@@ -6,8 +6,10 @@ use futures::Future;
 #[cfg(feature = "io_uring")]
 use rustix::thread::sched_getcpu;
 
+#[cfg(feature = "io_uring")]
+use crate::{Completion, CompletionState, Errno};
 use crate::{
-    Completion, CompletionState, Errno, OwnedFd, RuntimeHandle,
+    OwnedFd, RuntimeHandle,
     configuration::{BusyPoll, Configuration},
     task::{Task, TaskReadyState, TaskState},
     task_ref::create_waker,
@@ -410,7 +412,25 @@ impl Runtime {
                                 .as_ref()
                                 .is_some_and(|c| c.has_idle_advance_fn()))));
 
-            task_state = crate::runtime::submit_and_complete_io_all(task_state, busy_poll);
+            #[cfg(feature = "io_uring")]
+            {
+                task_state = crate::runtime::submit_and_complete_io_all(task_state, busy_poll);
+            }
+            #[cfg(feature = "epoll")]
+            {
+                let want = if busy_poll || task_state.any_ready() {
+                    0
+                } else {
+                    1
+                };
+                let wakers = task_state.epoll_driver.collect_ready(want);
+                // Release borrow while waking tasks
+                let task_state_cell = task_state.into_inner();
+                for waker in wakers {
+                    waker.wake();
+                }
+                task_state = task_state_cell.borrow_mut();
+            }
             task_state.prepare_cohort();
 
             #[cfg(feature = "virtual-clock")]

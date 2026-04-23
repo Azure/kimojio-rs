@@ -9,7 +9,7 @@ use rustix_uring::Errno;
 use crate::{
     Completion, CompletionState, OwnedFd, RuntimeHandle,
     configuration::{BusyPoll, Configuration},
-    task::{Task, TaskReadyState, TaskState},
+    task::{FutureOrResult, Task, TaskReadyState, TaskState},
     task_ref::create_waker,
     task_state_cell::TaskStateCellRef,
     timer::Timer,
@@ -488,16 +488,111 @@ impl Runtime {
         task_state.enter_stats.report("enter_stats     ");
         task_state.enter_stats_wait.report("enter_stats_wait");
 
-        // We want to drop all of the tasks as this runtime is exiting. This can result in arbitrary
-        // code running as the task is being dropped (e.g. scopeguard, drop implementations, etc..).
-        // To prevent re-entrant borrow_mut on task_state, we need to drop our task state reference
-        // before we drop the tasks. We accomplish this by preserving the old state and ensuring that
-        // the drops happen in the precise order we want.
+        let result = task.result();
+
+        // Runtime shutdown teardown.
+        //
+        // iterate every Task in `task_state.tasks` (which transitively reaches
+        // all Rc<Task>s — the ready queues and any waker-held Rc<Task>s all
+        // reference tasks registered here) and replace each task's future with
+        // a shutdown sentinel. Dropping the original future (via the
+        // std::mem::replace) happens while the io_uring rings are still alive,
+        // so any inner RingFuture::Drop can successfully cancel and drain its
+        // pending I/O. After the swap every task holds a `ShutdownFuture` that
+        // can never resume any I/O and whose `result()` reports a shutdown
+        // panic if queried.
+
+        let tasks_snapshot: Vec<Rc<Task>> =
+            task_state.tasks.iter().map(|(_, t)| t.clone()).collect();
+        drop(task_state);
+
+        for other_task in &tasks_snapshot {
+            // Set `current_task` to the task whose future is about to be
+            // dropped. Diagnostics emitted from its RingFuture::Drop (e.g.
+            // the `FutureCanceled` trace event) then attribute correctly
+            // to this task's task_index / activity_id, and any future code
+            // that assumes `current_task` is Some in a drop path continues
+            // to work. A scopeguard ensures we always clear it afterwards,
+            // even if dropping the old future panics.
+            {
+                let mut ts = TaskState::get();
+                ts.current_task = Some(other_task.clone());
+            }
+            let _restore_current_task = scopeguard::guard((), |_| {
+                TaskState::get().current_task = None;
+            });
+
+            // `std::mem::replace` returns the old future as the closure's
+            // output; we drop it *after* `use_mut` releases its recursion
+            // guard. RingFuture::Drop inside the old future only touches
+            // TaskState (not Task::active_state) so there is no re-entrant
+            // borrow of this cell.
+            let old_future = other_task
+                .active_state
+                .use_mut(|state| std::mem::replace(state, ShutdownFuture::new_pinned()));
+            drop(old_future);
+        }
+        drop(tasks_snapshot);
+
+        // At this point no task in `task_state.tasks` has a future that can
+        // still be holding pending borrowed-buffer I/O, so it is safe to
+        // tear down the rest of TaskState (including the io_uring rings).
+        // We must still be careful to release our task_state borrow before
+        // dropping `old_state`, because arbitrary Drop code may re-enter
+        // TaskState::get().
+        let mut task_state = TaskState::get();
         let old_state = std::mem::take(&mut *task_state);
         drop(task_state);
         drop(old_state);
 
-        task.result()
+        result
+    }
+}
+
+/// A no-op [`FutureOrResult`] used to replace a task's future during runtime
+/// shutdown. Swapping in a `ShutdownFuture` causes the task's real future
+/// (and any in-flight I/O inside it) to be dropped while the io_uring rings
+/// are still alive, and guarantees that any surviving `TaskHandle::result()`
+/// call produces a well-formed `Some(Err(_))` "panic" result rather than
+/// reading through freed memory.
+struct ShutdownFuture {
+    // Pre-packaged panic value returned once from `result()` and `None`
+    // thereafter, matching `TaskFuture::<F>::Result`'s one-shot contract.
+    result: Option<Box<dyn std::any::Any + Send + 'static>>,
+}
+
+impl ShutdownFuture {
+    fn new_pinned() -> std::pin::Pin<Box<dyn FutureOrResult>> {
+        Box::pin(ShutdownFuture {
+            result: Some(Box::new(
+                "task aborted: runtime shutdown while I/O or wait was pending",
+            )),
+        })
+    }
+}
+
+// ShutdownFuture has no self-referential state, so pinning is a no-op.
+impl Unpin for ShutdownFuture {}
+
+impl FutureOrResult for ShutdownFuture {
+    fn poll(
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<()> {
+        // The runtime never polls tasks after the event loop has exited, and
+        // this sentinel is only installed during that teardown. A poll here
+        // would indicate a logic bug elsewhere.
+        panic!("ShutdownFuture must not be polled");
+    }
+
+    unsafe fn result(
+        self: std::pin::Pin<&mut Self>,
+        _out_value: *mut (),
+    ) -> Option<Result<(), Box<dyn std::any::Any + Send + 'static>>> {
+        // We never write to `out_value`, so the caller's `F::Output` type
+        // does not need to match anything in particular — the soundness of
+        // `Task::result::<T>()` is preserved for every `T`.
+        std::pin::Pin::into_inner(self).result.take().map(Err)
     }
 }
 
@@ -550,6 +645,68 @@ mod test {
 
         assert_eq!(*result1.unwrap_err().downcast::<&str>().unwrap(), "abort!");
         assert_eq!(result2.unwrap().unwrap_err(), Errno::INVAL);
+    }
+
+    #[crate::test]
+    async fn test_shutdown_with_pending_borrowed_io() {
+        // Regression test for the panic at `current_task.as_ref().unwrap()`
+        // in RingFuture::Drop.
+        //
+        // The runtime exit path (block_on after the loop) takes ownership of
+        // the TaskState, drops it, and only then drops the per-thread tasks.
+        // During those drops `current_task` is None. If a Task being dropped
+        // owns a still-Submitted RingFuture borrowing user resources (e.g. a
+        // stack buffer), RingFuture::Drop reaches its
+        // pending_io_with_borrowed_resources branch and previously unwrapped
+        // a None current_task, panicking.
+        //
+        // Reproducing this requires two things at shutdown time:
+        //   1. The task actually drops (not held alive by a Waker→Rc<Task>
+        //      cycle from a Submitted Completion).
+        //   2. The task owns a Submitted RingFuture with borrowed resources.
+        //
+        // We satisfy (1) by suspending with `yield_io()` (no Rc<Task> in its
+        // wake path) and (2) by manually polling a `read` RingFuture with a
+        // no-op waker so the Completion never captures the task's real waker.
+
+        use std::future::Future;
+        use std::pin::Pin;
+        use std::task::{Context, Waker};
+
+        let ready = Rc::new(AsyncEvent::new());
+        let _task = {
+            let ready = ready.clone();
+            operations::spawn_task(async move {
+                // Pipe with no writer — the read will never complete.
+                let (read_fd, _write_fd) = crate::pipe::pipe().unwrap();
+                let mut buf = [0u8; 16];
+
+                // Drive the read RingFuture to Submitted state using a
+                // throwaway no-op waker so the Completion does NOT hold an
+                // Rc<Task>. This avoids the cycle that would otherwise leak
+                // the task across shutdown.
+                let mut read_fut = Box::pin(operations::read(&read_fd, &mut buf));
+                let noop = Waker::noop();
+                let mut cx = Context::from_waker(noop);
+                let _ = Pin::as_mut(&mut read_fut).poll(&mut cx);
+
+                ready.set();
+                // Suspend cooperatively using yield_io; its wake path is
+                // index-based and does not hold an Rc<Task>, so the task is
+                // free to be dropped cleanly during runtime shutdown.
+                loop {
+                    operations::yield_io().await;
+                }
+            })
+        };
+
+        // Wait for the spawned task to submit its read I/O.
+        ready.wait().await.unwrap();
+
+        // Trigger runtime exit. The spawned task's pending RingFuture (with
+        // borrowed buffer) will be dropped after current_task has been
+        // cleared, exercising the Drop path that previously unwrapped.
+        operations::shutdown_loop();
     }
 
     #[crate::test]

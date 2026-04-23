@@ -596,7 +596,7 @@ dependencies = [
 
 [[package]]
 name = "kimojio"
-version = "0.16.1"
+version = "0.16.2"
 dependencies = [
  "criterion",
  "foreign-types-shared",
@@ -620,7 +620,7 @@ dependencies = [
 
 [[package]]
 name = "kimojio-macros"
-version = "0.16.1"
+version = "0.16.2"
 dependencies = [
  "quote",
  "syn",
@@ -628,7 +628,7 @@ dependencies = [
 
 [[package]]
 name = "kimojio-tls"
-version = "0.16.1"
+version = "0.16.2"
 dependencies = [
  "cc",
  "rustix-uring",

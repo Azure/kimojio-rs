@@ -11,7 +11,7 @@ members = [
 resolver = "3"
 
 [workspace.package]
-version = "0.16.1"
+version = "0.16.2"
 edition = "2024"
 license = "MIT"
 homepage = "https://github.com/Azure/kimojio-rs"
@@ -25,9 +25,9 @@ foreign-types-shared = "0.1"
 futures = "0.3"
 impls = "1"
 intrusive-collections = "0.10"
-kimojio = { path = "kimojio", version = "0.16.1" }
-kimojio-macros = { path = "kimojio-macros", version = "0.16.1" }
-kimojio-tls = { path = "kimojio-tls", version = "0.16.1" }
+kimojio = { path = "kimojio", version = "0.16.2" }
+kimojio-macros = { path = "kimojio-macros", version = "0.16.2" }
+kimojio-tls = { path = "kimojio-tls", version = "0.16.2" }
 libc = "0.2"
 openssl = "0.10"
 pin-project-lite = "0.2"

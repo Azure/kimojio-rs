@@ -3,11 +3,13 @@
 use std::rc::Rc;
 
 use futures::Future;
+#[cfg(io_uring_backend)]
 use rustix::thread::sched_getcpu;
-use rustix_uring::Errno;
 
+#[cfg(io_uring_backend)]
+use crate::{Completion, CompletionState, Errno};
 use crate::{
-    Completion, CompletionState, OwnedFd, RuntimeHandle,
+    OwnedFd, RuntimeHandle,
     configuration::{BusyPoll, Configuration},
     task::{FutureOrResult, Task, TaskReadyState, TaskState},
     task_ref::create_waker,
@@ -68,13 +70,17 @@ fn poll_task(task: Rc<Task>, mut task_state: TaskStateCellRef<'_>) -> TaskStateC
             tag,
             start_time,
             activity_id,
+            #[cfg(io_uring_backend)]
             cpu: sched_getcpu() as u16,
+            #[cfg(not(io_uring_backend))]
+            cpu: 0,
         },
     );
 
     task_state
 }
 
+#[cfg(io_uring_backend)]
 struct RingEventTraceInfo {
     start_time: u64,
     ring_tag: u32,
@@ -84,6 +90,7 @@ struct RingEventTraceInfo {
     iopoll: bool,
 }
 
+#[cfg(io_uring_backend)]
 fn process_completions(
     mut task_state: TaskStateCellRef<'_>,
     trace_info: RingEventTraceInfo,
@@ -166,7 +173,7 @@ fn process_completions(
 
                 *state = CompletionState::Completed {
                     result,
-                    #[cfg(feature = "io_uring_cmd")]
+                    #[cfg(all(io_uring_backend, feature = "io_uring_cmd"))]
                     big_cqe: *cqe.big_cqe(),
                 };
 
@@ -194,6 +201,7 @@ fn process_completions(
     task_state
 }
 
+#[cfg(io_uring_backend)]
 pub(crate) fn submit_and_complete_io_all(
     mut task_state: TaskStateCellRef<'_>,
     busy_poll: bool,
@@ -230,6 +238,7 @@ pub(crate) fn submit_and_complete_io_all(
 /// completion queue ring buffer)
 ///
 /// Returns the tag for tracing purposes.
+#[cfg(io_uring_backend)]
 pub(crate) fn submit_and_complete_io(
     mut task_state: TaskStateCellRef<'_>,
     busy_poll: bool,
@@ -404,7 +413,39 @@ impl Runtime {
                                 .as_ref()
                                 .is_some_and(|c| c.has_idle_advance_fn()))));
 
-            task_state = crate::runtime::submit_and_complete_io_all(task_state, busy_poll);
+            #[cfg(io_uring_backend)]
+            {
+                task_state = crate::runtime::submit_and_complete_io_all(task_state, busy_poll);
+            }
+            #[cfg(epoll_backend)]
+            {
+                let want = if busy_poll || task_state.any_ready() {
+                    0
+                } else {
+                    1
+                };
+                let wakers = task_state.epoll_driver.collect_ready(want);
+                // Release borrow while waking tasks
+                let task_state_cell = task_state.into_inner();
+                for waker in wakers {
+                    waker.wake();
+                }
+                task_state = task_state_cell.borrow_mut();
+            }
+            #[cfg(iocp_backend)]
+            {
+                let want = if busy_poll || task_state.any_ready() {
+                    0
+                } else {
+                    1
+                };
+                let wakers = task_state.select_driver.collect_ready(want);
+                let task_state_cell = task_state.into_inner();
+                for waker in wakers {
+                    waker.wake();
+                }
+                task_state = task_state_cell.borrow_mut();
+            }
             task_state.prepare_cohort();
 
             #[cfg(feature = "virtual-clock")]

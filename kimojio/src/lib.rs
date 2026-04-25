@@ -8,11 +8,15 @@ use std::rc::Rc;
 use std::task::Waker;
 
 use futures::Future;
+pub use libc::c_int;
 pub use libc::{
-    EAGAIN, EALREADY, EBADFD, EBUSY, EEXIST, EINTR, EINVAL, EIO, ENOENT, ENOTCONN, ENOTDIR,
-    ENOTRECOVERABLE, ENOTSUP, EPERM, EPIPE, EPROTO, ESHUTDOWN, ETIMEDOUT,
+    EAGAIN, EALREADY, EBUSY, EEXIST, EINTR, EINVAL, EIO, ENOENT, ENOTCONN, ENOTDIR, EPERM, EPIPE,
+    EPROTO, ETIMEDOUT,
 };
-pub use libc::{S_IFDIR, S_IFLNK, S_IFMT, S_IFREG, c_int};
+#[cfg(not(target_os = "windows"))]
+pub use libc::{EBADFD, ENOTRECOVERABLE, ENOTSUP, ESHUTDOWN};
+#[cfg(not(target_os = "windows"))]
+pub use libc::{S_IFDIR, S_IFLNK, S_IFMT, S_IFREG};
 pub use libc::{SIGINT, SIGTERM};
 
 mod async_channel;
@@ -22,18 +26,24 @@ mod async_oneshot;
 mod async_reader_writer_lock;
 mod async_semaphore;
 mod async_stream;
+pub(crate) mod backend;
 mod buffer_pipe;
 mod cancellation_token;
 pub mod configuration;
+#[cfg(epoll_backend)]
+pub(crate) mod epoll_future;
 mod errors;
 mod handle_table;
 pub mod io_type;
+#[cfg(iocp_backend)]
+pub(crate) mod iocp_future;
 mod message_pipe;
 mod mut_in_place_cell;
 pub mod operations;
 pub mod pipe;
 mod pointer_buffer;
 mod prefix_buffer;
+#[cfg(io_uring_backend)]
 pub(crate) mod ring_future;
 mod runtime;
 mod runtime_handle;
@@ -79,6 +89,7 @@ pub use message_pipe::{
     make_message_pipe_oneway, make_message_pipe_oneway_sync,
 };
 pub use mut_in_place_cell::MutInPlaceCell;
+#[cfg(io_uring_backend)]
 use operations::kernel_version;
 use pointer_buffer::{pointer_from_buffer, pointer_to_buffer};
 pub use prefix_buffer::{BufferView, OwnedBuffer, PrefixBuffer, StaticBuffer};
@@ -88,8 +99,10 @@ pub use runtime_handle::{
     create_open_request,
 };
 pub use rustix::fd::OwnedFd;
+pub use rustix::io::Errno;
+#[cfg(io_uring_backend)]
 use rustix::io_uring::io_uring_user_data;
-pub use rustix_uring::Errno;
+#[cfg(io_uring_backend)]
 use rustix_uring::opcode::AsyncCancel;
 use task::Task;
 pub use tracing::{EventEnvelope, Events, TraceConfiguration};
@@ -100,12 +113,13 @@ use crate::configuration::BusyPoll;
 
 pub use kimojio_macros::{main, test};
 
+#[cfg_attr(not(io_uring_backend), allow(dead_code))]
 enum CompletionState {
     /// The future is created but SQE is not yet submitted to the kernel
     Idle {
-        #[cfg(feature = "io_uring_cmd")]
+        #[cfg(all(io_uring_backend, feature = "io_uring_cmd"))]
         entry: Option<rustix_uring::squeue::Entry128>,
-        #[cfg(not(feature = "io_uring_cmd"))]
+        #[cfg(all(io_uring_backend, not(feature = "io_uring_cmd")))]
         entry: Option<rustix_uring::squeue::Entry>,
         timespec: bool,
     },
@@ -119,16 +133,18 @@ enum CompletionState {
     /// The I/O is completed
     Completed {
         result: Result<u32, Errno>,
-        #[cfg(feature = "io_uring_cmd")]
+        #[cfg(all(io_uring_backend, feature = "io_uring_cmd"))]
         big_cqe: [u64; 2],
     },
     Terminated,
 }
 
+#[cfg_attr(not(io_uring_backend), allow(dead_code))]
 pub(crate) struct Completion {
     state: MutInPlaceCell<CompletionState>,
     owned_resources: CompletionResources,
     // memory for timeouts
+    #[cfg(io_uring_backend)]
     timespec: rustix_uring::types::Timespec,
     tag: u32,
     task_index: u16,
@@ -138,6 +154,7 @@ pub(crate) struct Completion {
 #[allow(dead_code)]
 enum CompletionResources {
     None,
+    #[cfg(io_uring_backend)]
     Timespec(rustix_uring::types::Timespec),
     Box(Box<dyn std::any::Any>),
     Rc(Rc<dyn std::any::Any>),
@@ -145,13 +162,14 @@ enum CompletionResources {
 }
 
 impl Completion {
+    #[allow(dead_code)]
     pub fn cancel(self: &Rc<Self>, task_state: &mut task::TaskState) {
         let should_cancel = self.state.use_mut(|state| match state {
             CompletionState::Idle { .. } => {
                 // cancel immediately but skipping submission
                 *state = CompletionState::Completed {
                     result: Err(Errno::CANCELED),
-                    #[cfg(feature = "io_uring_cmd")]
+                    #[cfg(all(io_uring_backend, feature = "io_uring_cmd"))]
                     big_cqe: [0; 2],
                 };
                 false
@@ -167,6 +185,7 @@ impl Completion {
             CompletionState::Terminated | CompletionState::Completed { .. } => false,
         });
 
+        #[cfg(io_uring_backend)]
         if should_cancel {
             let user_data_ptr = Rc::as_ptr(self) as *mut libc::c_void;
             let user_data = io_uring_user_data::from_ptr(user_data_ptr);
@@ -179,6 +198,11 @@ impl Completion {
                 task_state.submit(&[entry]);
                 task_state.stats.increment_in_flight_io(1);
             }
+        }
+        #[cfg(not(io_uring_backend))]
+        {
+            let _ = should_cancel;
+            let _ = task_state;
         }
     }
 }
@@ -277,15 +301,19 @@ pub fn run_with_configuration<Fut>(
 where
     Fut: Future + 'static,
 {
-    let kernel_version = kernel_version();
-    if kernel_version < (5, 15) {
-        panic!(
-            "The minimum supported kernel version is 5.15, but we have found {}.{}. Please upgrade your kernel. If you are using WSL, you may need to run 'WSL --update'.",
-            kernel_version.0, kernel_version.1
-        );
+    let mut runtime = Runtime::new(thread_index, configuration);
+
+    #[cfg(io_uring_backend)]
+    {
+        let kernel_version = kernel_version();
+        if kernel_version < (5, 15) {
+            panic!(
+                "The minimum supported kernel version is 5.15, but we have found {}.{}. Please upgrade your kernel. If you are using WSL, you may need to run 'WSL --update'.",
+                kernel_version.0, kernel_version.1
+            );
+        }
     }
 
-    let mut runtime = Runtime::new(thread_index, configuration);
     runtime.block_on(main)
 }
 

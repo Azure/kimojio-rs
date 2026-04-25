@@ -4,7 +4,7 @@ use std::ffi::{CStr, c_char, c_ulonglong, c_void};
 use std::num::NonZeroU64;
 use std::ptr::null_mut;
 
-use rustix_uring::Errno;
+use rustix::io::Errno;
 
 #[repr(C)]
 struct RawTlsServer {

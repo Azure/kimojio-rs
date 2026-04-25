@@ -14,16 +14,12 @@ use std::{
     thread::ThreadId,
 };
 
-#[cfg(feature = "io_uring_cmd")]
-use rustix_uring::{cqueue::Entry32 as CQE, squeue::Entry128 as SQE};
-
-#[cfg(not(feature = "io_uring_cmd"))]
-use rustix_uring::{cqueue::Entry as CQE, squeue::Entry as SQE};
-
-type IoUring = rustix_uring::IoUring<SQE, CQE>;
+#[cfg(io_uring_backend)]
+#[allow(unused_imports)]
+pub(crate) use crate::backend::{Cqe, IO_URING_SUBMISSION_ENTRIES, Ring, Sqe};
 
 use crate::{
-    Completion, EAGAIN, EBUSY, EINTR, HandleTable,
+    Completion, HandleTable,
     async_event::{WaitData, WaitList},
     mut_in_place_cell::MutInPlaceCell,
     task_ref::wake_task,
@@ -31,10 +27,6 @@ use crate::{
     tracing::{EventEnvelope, Events},
     uring_stats::URingStats,
 };
-
-/// This is the maximum number of submission entries that can be
-/// enqueued before we have to flush them to the kernel.
-pub const IO_URING_SUBMISSION_ENTRIES: usize = 128;
 
 /// The maximum number of completion pool entries that can be pooled for re-use.
 pub const MAX_COMPLETION_POOL_ENTRIES: usize = 4096;
@@ -196,6 +188,7 @@ impl Task {
         new_completions
     }
 
+    #[cfg(io_uring_backend)]
     pub(crate) fn register_io(&self, completion: &Rc<Completion>) {
         self.io_scope_completions.use_mut(|io_scope_completions| {
             if let Some(io_scope_completions) = io_scope_completions {
@@ -214,7 +207,10 @@ impl Task {
                 task_state.return_completion(completion);
             }
             // flush the added SQE
-            task_state = crate::runtime::submit_and_complete_io_all(task_state, true);
+            #[cfg(io_uring_backend)]
+            {
+                task_state = crate::runtime::submit_and_complete_io_all(task_state, true);
+            }
 
             for wait in io_scope_completions.waits.drain(..) {
                 wait.canceled.set(true);
@@ -313,72 +309,6 @@ impl TraceBuffer {
     }
 }
 
-pub struct Ring(IoUring);
-
-impl Ring {
-    pub fn new(iopoll: bool) -> Self {
-        let mut ring_builder = rustix_uring::IoUring::builder();
-        if cfg!(feature = "setup_single_issuer") {
-            // setup_single_issuer() accepts &mut self, no need to rebind
-            // ring_builder to the return value from setup_single_issuer()
-            ring_builder.setup_single_issuer();
-        }
-        if iopoll {
-            ring_builder.setup_iopoll();
-        }
-        let entries = IO_URING_SUBMISSION_ENTRIES as u32;
-        Self(ring_builder.build(entries).unwrap())
-    }
-
-    /// Blocks if want > 0. want is the number of CQEs to wait for.
-    /// Returns the number of SQEs submitted
-    pub fn submit_and_wait(&self, want: usize) -> usize {
-        match self.0.submitter().submit_and_wait(want) {
-            Ok(submitted) => submitted,
-            Err(e) => match e.raw_os_error() {
-                EAGAIN | EBUSY | EINTR => {
-                    // EAGAIN indicates temporary inability to allocate resources.
-                    // EBUSY means no CQE positions available
-                    // EINTR means we got as signal
-                    // In these three cases, the guidance is to process completions and continue
-                    0
-                }
-                _ => {
-                    // EBADF, EFAULT, EINVAL, ENXIO, EOPNOTSUPP
-                    panic!("Error submitting or waiting for IO: {e:?}");
-                }
-            },
-        }
-    }
-
-    pub fn register_probe(&self) -> rustix_uring::Probe {
-        let mut probe = rustix_uring::Probe::new();
-        self.0.submitter().register_probe(&mut probe).unwrap();
-        probe
-    }
-
-    pub fn get_completion_count(&mut self) -> usize {
-        self.0.completion().len()
-    }
-
-    #[inline(always)]
-    pub fn get_next_cqe(&mut self) -> Option<CQE> {
-        self.0.completion().next()
-    }
-
-    #[inline(always)]
-    pub fn submit(&mut self, entries: &[SQE]) {
-        // SAFETY: the pointers in entry have to live until the CQE is processed.
-        // This will be the case as long as RingFuture is called from an "async"
-        // method.
-        let result = unsafe { self.0.submission().push_multiple(entries) };
-        if result.is_err() {
-            self.submit_and_wait(0);
-            unsafe { self.0.submission().push_multiple(entries) }.expect("Can not push SQE");
-        }
-    }
-}
-
 use enter_stats::EnterStats;
 
 #[cfg(all(not(test), not(feature = "enter_stats")))]
@@ -467,13 +397,14 @@ pub struct TaskState {
     pub thread_id: ThreadId,
 
     // The I/O URing for this thread
+    #[cfg(io_uring_backend)]
     pub ring: Ring,
 
     // The I/O URing for this thread (with IO Poll enabled)
+    #[cfg(io_uring_backend)]
     pub ring_poll: Ring,
 
     pub(crate) trace_buffer: TraceBuffer,
-
     // Statistics for this thread (TODO replace with trace buffer analysis)
     pub stats: URingStats,
 
@@ -510,7 +441,16 @@ pub struct TaskState {
     pub next_tag: u32,
 
     // probe is used to check if the kernel supports certain I/O uring operations
+    #[cfg(io_uring_backend)]
     pub probe: rustix_uring::Probe,
+
+    // The epoll driver for the epoll backend
+    #[cfg(epoll_backend)]
+    pub epoll_driver: crate::backend::epoll::EpollDriver,
+
+    // The select-based readiness driver for the IOCP backend
+    #[cfg(iocp_backend)]
+    pub select_driver: crate::backend::select_driver::SelectDriver,
 
     // Boolean indicating if the event loop should continue to process new
     // events or immediately terminate. Used internally to implement shutdown
@@ -518,7 +458,7 @@ pub struct TaskState {
     pub keep_running: bool,
 
     #[cfg(feature = "fault_injection")]
-    pub fault: Option<(usize, rustix_uring::Errno)>,
+    pub fault: Option<(usize, crate::Errno)>,
 
     #[cfg(feature = "virtual-clock")]
     pub(crate) clock: Option<crate::virtual_clock::VirtualClockState>,
@@ -530,14 +470,19 @@ thread_local! {
 
 impl TaskState {
     pub fn new() -> Self {
+        #[cfg(io_uring_backend)]
         let ring = Ring::new(false);
+        #[cfg(io_uring_backend)]
         let ring_poll = Ring::new(true);
+        #[cfg(io_uring_backend)]
         let probe = ring.register_probe();
         Self {
             task_count: 0,
             last_ready_cpu: false,
             thread_id: std::thread::current().id(),
+            #[cfg(io_uring_backend)]
             ring,
+            #[cfg(io_uring_backend)]
             ring_poll,
             trace_buffer: TraceBuffer::default(),
             stats: URingStats::new(),
@@ -550,9 +495,14 @@ impl TaskState {
             completion_pool: VecDeque::new(),
             tasks: HandleTable::new(),
             completed_tasks: VecDeque::new(),
+            #[cfg(io_uring_backend)]
             probe,
             keep_running: true,
             next_tag: 0,
+            #[cfg(epoll_backend)]
+            epoll_driver: crate::backend::epoll::EpollDriver::new(),
+            #[cfg(iocp_backend)]
+            select_driver: crate::backend::select_driver::SelectDriver::new(),
             #[cfg(feature = "fault_injection")]
             fault: None,
             #[cfg(feature = "virtual-clock")]
@@ -561,7 +511,7 @@ impl TaskState {
     }
 
     #[cfg(feature = "fault_injection")]
-    pub fn inject_fault(&mut self, operation: usize, fault: rustix_uring::Errno) {
+    pub fn inject_fault(&mut self, operation: usize, fault: crate::Errno) {
         self.fault = Some((operation, fault));
     }
 
@@ -579,6 +529,7 @@ impl TaskState {
         self.task_count
     }
 
+    #[cfg(io_uring_backend)]
     #[inline(always)]
     pub fn get_completion_count(&mut self, iopoll: bool) -> usize {
         if iopoll {
@@ -588,8 +539,9 @@ impl TaskState {
         }
     }
 
+    #[cfg(io_uring_backend)]
     #[inline(always)]
-    pub fn get_next_cqe(&mut self, iopoll: bool) -> Option<CQE> {
+    pub fn get_next_cqe(&mut self, iopoll: bool) -> Option<Cqe> {
         if iopoll {
             self.ring_poll.get_next_cqe()
         } else {
@@ -758,13 +710,15 @@ impl TaskState {
         }
     }
 
+    #[cfg(io_uring_backend)]
     #[inline(always)]
-    pub fn submit(&mut self, entries: &[SQE]) {
+    pub fn submit(&mut self, entries: &[Sqe]) {
         self.ring.submit(entries)
     }
 
+    #[cfg(io_uring_backend)]
     #[inline(always)]
-    pub fn submit_poll(&mut self, entries: &[SQE]) {
+    pub fn submit_poll(&mut self, entries: &[Sqe]) {
         self.ring_poll.submit(entries)
     }
 
@@ -869,6 +823,7 @@ impl TaskState {
         }
     }
 
+    #[cfg(io_uring_backend)]
     pub(crate) fn new_completion(&mut self, completion: Completion) -> Rc<Completion> {
         if let Some(mut existing) = self.completion_pool.pop_front() {
             let ptr =

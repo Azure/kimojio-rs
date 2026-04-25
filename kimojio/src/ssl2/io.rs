@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
+use crate::Errno;
 use crate::{AsyncStreamRead, AsyncStreamWrite};
-use rustix_uring::Errno;
 use std::collections::VecDeque;
 
 fn would_block() -> std::io::Error {

@@ -13,18 +13,26 @@
 //! }
 //! ```
 //!
+#[cfg(not(target_os = "windows"))]
+use crate::Errno;
+use rustix::fd::OwnedFd;
+
+#[cfg(not(target_os = "windows"))]
 use std::io::Error;
 
-use crate::Errno;
+#[cfg(not(target_os = "windows"))]
 use libc::pipe2;
+#[cfg(not(target_os = "windows"))]
 use rustix::{
-    fd::{FromRawFd, OwnedFd},
+    fd::FromRawFd,
     net::{AddressFamily, SocketFlags, SocketType, socketpair},
 };
 
 /// Creates a pair of bidirectional connected pipes.
 ///
-/// Returns two file descriptors where data written to one can be read from the other.
+/// Returns two file descriptors where data written to one can be read from
+/// the other.
+#[cfg(not(target_os = "windows"))]
 pub fn bipipe() -> (OwnedFd, OwnedFd) {
     socketpair(
         AddressFamily::UNIX,
@@ -35,9 +43,36 @@ pub fn bipipe() -> (OwnedFd, OwnedFd) {
     .unwrap()
 }
 
+/// Creates a pair of bidirectional connected pipes using a TCP loopback pair.
+///
+/// Windows does not have `AF_UNIX` socketpairs available on all versions, so
+/// we fall back to a localhost TCP pair.
+#[cfg(target_os = "windows")]
+pub fn bipipe() -> (OwnedFd, OwnedFd) {
+    use std::net::TcpListener;
+    use std::os::windows::io::{FromRawSocket, IntoRawSocket};
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bipipe: bind failed");
+    let port = listener.local_addr().unwrap().port();
+    let client = std::net::TcpStream::connect(("127.0.0.1", port)).expect("bipipe: connect failed");
+    let (server, _) = listener.accept().expect("bipipe: accept failed");
+
+    let client_raw = client.into_raw_socket();
+    let server_raw = server.into_raw_socket();
+
+    // SAFETY: client_raw and server_raw are valid Windows SOCKET handles.
+    unsafe {
+        (
+            OwnedFd::from_raw_socket(client_raw),
+            OwnedFd::from_raw_socket(server_raw),
+        )
+    }
+}
+
 /// Create a unidirectional pipe for IPC/inter-thread communication. The first
 /// OwnedFd is the read end of the pipe, while the second OwnedFd is the write
 /// end of the pipe.
+#[cfg(not(target_os = "windows"))]
 pub fn pipe() -> Result<(OwnedFd, OwnedFd), Errno> {
     let mut fds = [0i32; 2];
     // SAFETY: Safe because the fds array is 2 elements long as requires to
@@ -53,10 +88,12 @@ pub fn pipe() -> Result<(OwnedFd, OwnedFd), Errno> {
 mod test {
     use std::{ffi::c_void, io::IoSlice};
 
+    #[cfg(io_uring_backend)]
     use rustix::io_uring::iovec;
 
     use crate::{operations, pipe::pipe};
 
+    #[cfg(io_uring_backend)]
     #[crate::test]
     async fn pipe_test() {
         let (read, write) = pipe().unwrap();

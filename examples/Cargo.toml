@@ -6,13 +6,17 @@ publish = false
 
 [features]
 tls = ["kimojio/tls", "dep:openssl"]
+io_uring = ["kimojio/io_uring"]
+epoll = ["kimojio/epoll"]
+windows-iocp = ["kimojio/windows-iocp"]
 virtual-clock = ["kimojio/virtual-clock"]
+default = ["io_uring"]
 
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
 futures.workspace = true
-kimojio.workspace = true
+kimojio = { path = "../kimojio", default-features = false }
 openssl = { workspace = true, optional = true }
 rustix.workspace = true
 
@@ -24,6 +28,10 @@ path = "src/bin/copyfile.rs"
 name = "retry-backoff"
 path = "src/bin/retry_backoff.rs"
 required-features = ["virtual-clock"]
+
+[[bin]]
+name = "tcp-echo-server"
+path = "src/bin/tcp_echo_server.rs"
 
 [[bin]]
 name = "tls-echo-server"

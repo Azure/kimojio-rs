@@ -280,7 +280,7 @@ impl VirtualSleepFuture {
 }
 
 impl std::future::Future for VirtualSleepFuture {
-    type Output = Result<(), rustix_uring::Errno>;
+    type Output = Result<(), crate::Errno>;
 
     fn poll(
         mut self: std::pin::Pin<&mut Self>,

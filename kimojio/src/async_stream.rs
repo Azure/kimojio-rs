@@ -271,7 +271,7 @@ async fn writev_impl(
 
 async fn shutdown_impl(fd: &mut Option<OwnedFd>) -> Result<(), Errno> {
     if let Some(fd) = fd {
-        operations::shutdown(fd, libc::SHUT_RDWR).await?;
+        operations::shutdown(fd, rustix::net::Shutdown::Both as i32).await?;
         Ok(())
     } else {
         Err(Errno::from_raw_os_error(crate::EPIPE))

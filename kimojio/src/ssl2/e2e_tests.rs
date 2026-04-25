@@ -1,6 +1,6 @@
 use std::{os::fd::OwnedFd, time::Instant};
 
-use rustix_uring::Errno;
+use crate::Errno;
 
 use crate::{
     AsyncStreamRead, AsyncStreamWrite,

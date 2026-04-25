@@ -615,6 +615,7 @@ dependencies = [
  "static_assertions",
  "tempfile",
  "uuid",
+ "windows-sys 0.61.2",
  "zerocopy",
 ]
 
@@ -631,7 +632,7 @@ name = "kimojio-tls"
 version = "0.16.2"
 dependencies = [
  "cc",
- "rustix-uring",
+ "rustix",
 ]
 
 [[package]]

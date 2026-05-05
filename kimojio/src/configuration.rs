@@ -6,6 +6,18 @@
 
 use std::time::Duration;
 
+/// Controls when the runtime event loop exits.
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Default)]
+pub enum ExitBehavior {
+    /// Exit when there are no tasks left (default).
+    #[default]
+    WhenEmpty,
+
+    /// Exit when the main task (the future passed to `block_on`) completes,
+    /// regardless of whether other spawned tasks are still running.
+    WhenMainTaskCompletes,
+}
+
 /// Configuration options for the io_uring runtime.
 ///
 /// Use the builder pattern to customize runtime behavior.
@@ -23,6 +35,9 @@ pub struct Configuration {
     /// specific CPU cores. This is a power user feature that should only be
     /// used with careful testing and experimentation.
     pub(crate) busy_poll: BusyPoll,
+
+    /// Controls when the runtime event loop exits.
+    pub(crate) exit_behavior: ExitBehavior,
 }
 
 /// Controls whether the event loop busy-polls for I/O completion.
@@ -70,16 +85,30 @@ impl Configuration {
         self.busy_poll = busy_poll;
         self
     }
+
+    /// Sets the exit behavior for the runtime event loop.
+    pub fn set_exit_behavior(mut self, exit_behavior: ExitBehavior) -> Self {
+        self.exit_behavior = exit_behavior;
+        self
+    }
 }
 
 #[cfg(test)]
 mod test {
-    use crate::configuration::BusyPoll;
+    use crate::configuration::{BusyPoll, ExitBehavior};
 
     #[test]
     fn configuration_default_test() {
         let config = crate::Configuration::new();
         assert_eq!(config.busy_poll, BusyPoll::Never);
+        assert_eq!(config.exit_behavior, ExitBehavior::WhenEmpty);
         assert!(config.trace_buffer_manager.is_none());
+    }
+
+    #[test]
+    fn configuration_set_exit_behavior() {
+        let config =
+            crate::Configuration::new().set_exit_behavior(ExitBehavior::WhenMainTaskCompletes);
+        assert_eq!(config.exit_behavior, ExitBehavior::WhenMainTaskCompletes);
     }
 }

@@ -8,7 +8,7 @@ use rustix_uring::Errno;
 
 use crate::{
     Completion, CompletionState, OwnedFd, RuntimeHandle,
-    configuration::{BusyPoll, Configuration},
+    configuration::{BusyPoll, Configuration, ExitBehavior},
     task::{FutureOrResult, Task, TaskReadyState, TaskState},
     task_ref::create_waker,
     task_state_cell::TaskStateCellRef,
@@ -296,6 +296,7 @@ pub(crate) fn submit_and_complete_io(
 
 pub struct Runtime {
     busy_poll: BusyPoll,
+    exit_behavior: ExitBehavior,
     server_pipe: OwnedFd,
     client_pipe: OwnedFd,
     // Runtime is bound to a single thread and must not be sent across threads.
@@ -309,6 +310,7 @@ impl Runtime {
         let Configuration {
             trace_buffer_manager,
             busy_poll,
+            exit_behavior,
         } = configuration;
         let mut task_state = TaskState::get();
         task_state.trace_buffer.thread_idx = thread_index;
@@ -316,6 +318,7 @@ impl Runtime {
         let (server_pipe, client_pipe) = crate::pipe::bipipe();
         Self {
             busy_poll,
+            exit_behavior,
             server_pipe,
             client_pipe,
             _not_send: std::marker::PhantomData,
@@ -378,7 +381,14 @@ impl Runtime {
         // Bail out once all tasks complete or if shutdown() is called which sets keep_running to false
         #[cfg(feature = "virtual-clock")]
         let mut idle_advance_active = true; // optimistic: try callback on first iteration
-        while task_state.get_task_count() > 0 && task_state.keep_running {
+        while task_state.keep_running {
+            let should_exit = match self.exit_behavior {
+                ExitBehavior::WhenEmpty => task_state.get_task_count() == 0,
+                ExitBehavior::WhenMainTaskCompletes => task.get_state() == TaskReadyState::Complete,
+            };
+            if should_exit {
+                break;
+            }
             // do not busy poll if the cool down time has elapsed
             let busy_poll = match self.busy_poll {
                 BusyPoll::Never => false,
@@ -838,5 +848,59 @@ mod test {
             false,
             BusyPoll::Until(std::time::Duration::from_millis(10)),
         );
+    }
+
+    #[test]
+    fn test_exit_when_empty_waits_for_spawned_tasks() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+
+        let spawned_completed = Rc::new(Cell::new(false));
+        let flag = spawned_completed.clone();
+
+        let configuration = crate::Configuration::new()
+            .set_exit_behavior(crate::configuration::ExitBehavior::WhenEmpty);
+        let result = crate::run_with_configuration(
+            0,
+            async move {
+                let event = Rc::new(AsyncEvent::new());
+                let spawned_event = event.clone();
+                operations::spawn_task(async move {
+                    // Wait until main task signals it is about to exit.
+                    spawned_event.wait().await.unwrap();
+                    flag.set(true);
+                });
+                // Signal the spawned task, then exit main.
+                event.set();
+                42
+            },
+            configuration,
+        );
+
+        assert_eq!(result.unwrap().unwrap(), 42);
+        // With WhenEmpty, the runtime waits for all tasks including the spawned one.
+        assert!(spawned_completed.get());
+    }
+
+    #[test]
+    fn test_exit_when_main_task_completes() {
+        let configuration = crate::Configuration::new()
+            .set_exit_behavior(crate::configuration::ExitBehavior::WhenMainTaskCompletes);
+        let result = crate::run_with_configuration(
+            0,
+            async move {
+                operations::spawn_task(async move {
+                    // Loop forever — runtime should exit without waiting for this.
+                    loop {
+                        operations::yield_io().await;
+                    }
+                });
+                42
+            },
+            configuration,
+        );
+
+        // The runtime returned the main task's result despite the spawned task still running.
+        assert_eq!(result.unwrap().unwrap(), 42);
     }
 }

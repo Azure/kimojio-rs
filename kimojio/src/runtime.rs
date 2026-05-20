@@ -264,9 +264,14 @@ pub(crate) fn submit_and_complete_io(
                 (1, enter_stats_wait)
             };
 
-            enter_stats.start();
-            let submissions = ring.submit_and_wait(want);
-            enter_stats.stop();
+            let submissions = if ring.should_enter(want) {
+                enter_stats.start();
+                let submissions = ring.submit_and_wait(want);
+                enter_stats.stop();
+                submissions
+            } else {
+                0
+            };
 
             // do not double count the submissions
             let submissions = submissions as u64;
@@ -754,6 +759,34 @@ mod test {
                     .unwrap();
                 let wait_count = crate::task::TaskState::get().enter_stats_wait.count;
                 assert_eq!(wait_count, 0);
+            },
+            false,
+            BusyPoll::Always,
+        );
+    }
+
+    #[test]
+    fn test_busy_poll_always_reaps_completion_without_enter_after_submit() {
+        crate::run_test_with_handle(
+            "test_busy_poll_always_reaps_completion_without_enter_after_submit",
+            async |_| {
+                operations::yield_io().await;
+                let enter_count = crate::task::TaskState::get().enter_stats.count;
+
+                let (read_fd, write_fd) = crate::pipe::pipe().unwrap();
+                let writer = std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                    assert_eq!(rustix::io::write(&write_fd, b"x").unwrap(), 1);
+                });
+
+                let mut buf = [0u8; 1];
+                assert_eq!(operations::read(&read_fd, &mut buf).await.unwrap(), 1);
+                assert_eq!(buf, [b'x']);
+                writer.join().unwrap();
+
+                let enter_count_after_completion = crate::task::TaskState::get().enter_stats.count;
+                assert_eq!(enter_count_after_completion, enter_count + 1);
+                assert_eq!(crate::task::TaskState::get().enter_stats_wait.count, 0);
             },
             false,
             BusyPoll::Always,

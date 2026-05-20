@@ -331,7 +331,7 @@ impl Ring {
     }
 
     /// Blocks if want > 0. want is the number of CQEs to wait for.
-    /// Returns the number of SQEs submitted
+    /// Returns the number of SQEs submitted.
     pub fn submit_and_wait(&self, want: usize) -> usize {
         match self.0.submitter().submit_and_wait(want) {
             Ok(submitted) => submitted,
@@ -349,6 +349,15 @@ impl Ring {
                 }
             },
         }
+    }
+
+    pub fn should_enter(&mut self, want: usize) -> bool {
+        if want > 0 || self.0.params().is_setup_iopoll() {
+            return true;
+        }
+
+        let submission = self.0.submission();
+        !submission.is_empty() || submission.cq_overflow()
     }
 
     pub fn register_probe(&self) -> rustix_uring::Probe {

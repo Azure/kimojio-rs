@@ -1547,6 +1547,17 @@ impl<T: 'static> TaskHandle<T> {
         }
     }
 
+    /// Returns `true` if the task has completed.
+    ///
+    /// This checks the task state without polling the handle and does not consume
+    /// the task result.
+    pub fn is_complete(&self) -> bool {
+        match self.wait.source() {
+            Some(source) => source.task.get_state() == TaskReadyState::Complete,
+            None => true,
+        }
+    }
+
     /// Wait for a task to complete, ignoring the result.
     pub fn wait(&self) -> WaitFuture {
         WaitFuture::new(self.wait.source().unwrap().task())
@@ -2711,6 +2722,33 @@ mod test {
         let (_f1, f2) = futures::join!(task.wait(), task);
 
         assert_eq!(f2.unwrap(), 5);
+    }
+
+    #[crate::test]
+    async fn task_handle_is_complete_observes_completion_without_polling_handle() {
+        let event = Rc::new(AsyncEvent::new());
+        let task = {
+            let event = event.clone();
+            operations::spawn_task(async move {
+                event.wait().await.unwrap();
+                5
+            })
+        };
+
+        assert!(!task.is_complete());
+        operations::yield_io().await;
+        assert!(!task.is_complete());
+
+        event.set();
+        for _ in 0..100 {
+            operations::yield_io().await;
+            if task.is_complete() {
+                break;
+            }
+        }
+
+        assert!(task.is_complete());
+        assert_eq!(task.await.unwrap(), 5);
     }
 
     #[crate::test]

@@ -488,13 +488,47 @@ fn sockaddr_from_socketaddr_unix(addr: &SocketAddrUnix) -> (sockaddr_un, usize) 
 ///
 /// Returns `Ok(())` on successful connection, or an error.
 pub async fn connect_unix(fd: &impl AsFd, addr: &SocketAddrUnix) -> Result<(), Errno> {
+    connect_unix_with_timeout(fd, addr, None).await
+}
+
+/// Connects a Unix domain socket to a peer with a deadline.
+///
+/// Like [`connect_unix`], but with an optional deadline. If the deadline has
+/// already passed, it fails with `Errno::TIMEDOUT`; if the in-flight connect
+/// reaches the linked io_uring timeout, it fails with `Errno::TIME`.
+///
+/// **Note:** When a virtual clock is active, the deadline comparison uses virtual
+/// time, but the actual I/O timeout submitted to io_uring uses real kernel time.
+/// Advancing virtual time will **not** cause an in-flight I/O operation to time
+/// out early. This is by design — real I/O latency is not virtualized.
+///
+/// Returns `Ok(())` on successful connection, or an error.
+pub async fn connect_unix_with_deadline(
+    fd: &impl AsFd,
+    addr: &SocketAddrUnix,
+    deadline: Option<Instant>,
+) -> Result<(), Errno> {
+    connect_unix_with_timeout(fd, addr, timeout_from_deadline(deadline)?).await
+}
+
+/// Connects a Unix domain socket to a peer with a timeout.
+///
+/// Like [`connect_unix`], but with an optional timeout duration. If the operation
+/// does not complete within the timeout, it will fail with `Errno::TIME`.
+///
+/// Returns `Ok(())` on successful connection, or an error.
+pub async fn connect_unix_with_timeout(
+    fd: &impl AsFd,
+    addr: &SocketAddrUnix,
+    timeout: Option<Duration>,
+) -> Result<(), Errno> {
     let fd = fd.as_fd().as_raw_fd();
     let (addr, addrlen) = sockaddr_from_socketaddr_unix(addr);
     let addr = core::ptr::addr_of!(addr) as *const SocketAddrOpaque;
     UnitFuture::new(
         opcode::Connect::new(Fd(fd), addr, addrlen as u32).build(),
         fd,
-        None,
+        timeout,
         IOType::Connect,
     )
     .await
@@ -507,6 +541,50 @@ pub async fn connect_unix(fd: &impl AsFd, addr: &SocketAddrUnix) -> Result<(), E
 ///
 /// Returns `Ok(())` on successful connection, or an error.
 pub async fn connect(fd: &impl AsFd, addr: &SocketAddr) -> Result<(), Errno> {
+    connect_with_timeout(fd, addr, None).await
+}
+
+fn timeout_from_deadline(deadline: Option<Instant>) -> Result<Option<Duration>, Errno> {
+    match deadline {
+        Some(deadline) => deadline
+            .checked_duration_since(crate::clock_now())
+            .map(Some)
+            .ok_or(Errno::TIMEDOUT),
+        None => Ok(None),
+    }
+}
+
+/// Connects a socket to a peer address with a deadline.
+///
+/// Like [`connect`], but with an optional deadline. If the deadline has already
+/// passed, it fails with `Errno::TIMEDOUT`; if the in-flight connect reaches
+/// the linked io_uring timeout, it fails with `Errno::TIME`.
+///
+/// **Note:** When a virtual clock is active, the deadline comparison uses virtual
+/// time, but the actual I/O timeout submitted to io_uring uses real kernel time.
+/// Advancing virtual time will **not** cause an in-flight I/O operation to time
+/// out early. This is by design — real I/O latency is not virtualized.
+///
+/// Returns `Ok(())` on successful connection, or an error.
+pub async fn connect_with_deadline(
+    fd: &impl AsFd,
+    addr: &SocketAddr,
+    deadline: Option<Instant>,
+) -> Result<(), Errno> {
+    connect_with_timeout(fd, addr, timeout_from_deadline(deadline)?).await
+}
+
+/// Connects a socket to a peer address with a timeout.
+///
+/// Like [`connect`], but with an optional timeout duration. If the operation does
+/// not complete within the timeout, it will fail with `Errno::TIME`.
+///
+/// Returns `Ok(())` on successful connection, or an error.
+pub async fn connect_with_timeout(
+    fd: &impl AsFd,
+    addr: &SocketAddr,
+    timeout: Option<Duration>,
+) -> Result<(), Errno> {
     let fd = fd.as_fd().as_raw_fd();
     match addr {
         SocketAddr::V4(addr) => {
@@ -516,7 +594,7 @@ pub async fn connect(fd: &impl AsFd, addr: &SocketAddr) -> Result<(), Errno> {
             UnitFuture::new(
                 opcode::Connect::new(Fd(fd), addr, addrlen).build(),
                 fd,
-                None,
+                timeout,
                 IOType::Connect,
             )
             .await
@@ -528,7 +606,7 @@ pub async fn connect(fd: &impl AsFd, addr: &SocketAddr) -> Result<(), Errno> {
             UnitFuture::new(
                 opcode::Connect::new(Fd(fd), addr, addrlen).build(),
                 fd,
-                None,
+                timeout,
                 IOType::Connect,
             )
             .await
@@ -568,16 +646,9 @@ pub fn writev_with_deadline<'a>(
     offset: Option<u64>,
     deadline: Option<Instant>,
 ) -> ErrnoOrFuture<UsizeFuture<'a>> {
-    let timeout = if let Some(deadline) = deadline {
-        if let Some(duration) = deadline.checked_duration_since(crate::clock_now()) {
-            Some(duration)
-        } else {
-            return ErrnoOrFuture::Error {
-                errno: Errno::TIMEDOUT,
-            };
-        }
-    } else {
-        None
+    let timeout = match timeout_from_deadline(deadline) {
+        Ok(timeout) => timeout,
+        Err(errno) => return ErrnoOrFuture::Error { errno },
     };
 
     ErrnoOrFuture::Future {
@@ -636,16 +707,9 @@ pub fn write_with_deadline<'a>(
     buf: &'a [u8],
     deadline: Option<Instant>,
 ) -> ErrnoOrFuture<UsizeFuture<'a>> {
-    let timeout = if let Some(deadline) = deadline {
-        if let Some(duration) = deadline.checked_duration_since(crate::clock_now()) {
-            Some(duration)
-        } else {
-            return ErrnoOrFuture::Error {
-                errno: Errno::TIMEDOUT,
-            };
-        }
-    } else {
-        None
+    let timeout = match timeout_from_deadline(deadline) {
+        Ok(timeout) => timeout,
+        Err(errno) => return ErrnoOrFuture::Error { errno },
     };
 
     ErrnoOrFuture::Future {
@@ -674,6 +738,10 @@ pub fn write_with_timeout<'a>(
         IOType::Write,
     )
 }
+
+// TODO: When bumping the minor version, change send/recv/sendmsg/recvmsg to
+// expose no-timeout wrappers plus *_with_timeout and *_with_deadline variants
+// matching read/write naming. Their current timeout parameter is public API.
 
 /// Sends data on a socket.
 ///
@@ -819,13 +887,55 @@ pub fn pwrite<'a>(fd: &impl AsFd, buf: &'a [u8], offset: u64) -> UsizeFuture<'a>
 ///
 /// Returns a future that resolves to the number of bytes read, or an error.
 pub fn readv<'a>(fd: &impl AsFd, iovec: &'a [iovec], offset: Option<u64>) -> UsizeFuture<'a> {
+    readv_with_timeout(fd, iovec, offset, None)
+}
+
+/// Reads data from a file descriptor into multiple buffers with a deadline.
+///
+/// Like [`readv`], but with an optional deadline. If the operation does not complete
+/// before the deadline, it will fail with `Errno::TIMEDOUT`.
+///
+/// **Note:** When a virtual clock is active, the deadline comparison uses virtual
+/// time, but the actual I/O timeout submitted to io_uring uses real kernel time.
+/// Advancing virtual time will **not** cause an in-flight I/O operation to time out
+/// early. This is by design — real I/O latency is not virtualized.
+///
+/// Returns a future that resolves to the number of bytes read, or an error.
+pub fn readv_with_deadline<'a>(
+    fd: &impl AsFd,
+    iovec: &'a [iovec],
+    offset: Option<u64>,
+    deadline: Option<Instant>,
+) -> ErrnoOrFuture<UsizeFuture<'a>> {
+    let timeout = match timeout_from_deadline(deadline) {
+        Ok(timeout) => timeout,
+        Err(errno) => return ErrnoOrFuture::Error { errno },
+    };
+
+    ErrnoOrFuture::Future {
+        fut: readv_with_timeout(fd, iovec, offset, timeout),
+    }
+}
+
+/// Reads data from a file descriptor into multiple buffers with a timeout.
+///
+/// Like [`readv`], but with an optional timeout duration. If the operation does not
+/// complete within the timeout, it will fail with `Errno::TIME`.
+///
+/// Returns a future that resolves to the number of bytes read, or an error.
+pub fn readv_with_timeout<'a>(
+    fd: &impl AsFd,
+    iovec: &'a [iovec],
+    offset: Option<u64>,
+    timeout: Option<Duration>,
+) -> UsizeFuture<'a> {
     let fd = fd.as_fd().as_raw_fd();
     UsizeFuture::new(
         opcode::Readv::new(Fd(fd), iovec.as_ptr(), iovec.len() as u32)
             .offset(offset.unwrap_or(u64::MAX))
             .build(),
         fd,
-        None,
+        timeout,
         IOType::Read,
     )
 }
@@ -856,16 +966,9 @@ pub fn read_with_deadline<'a>(
     buf: &'a mut [u8],
     deadline: Option<Instant>,
 ) -> ErrnoOrFuture<UsizeFuture<'a>> {
-    let timeout = if let Some(deadline) = deadline {
-        if let Some(duration) = deadline.checked_duration_since(crate::clock_now()) {
-            Some(duration)
-        } else {
-            return ErrnoOrFuture::Error {
-                errno: Errno::TIMEDOUT,
-            };
-        }
-    } else {
-        None
+    let timeout = match timeout_from_deadline(deadline) {
+        Ok(timeout) => timeout,
+        Err(errno) => return ErrnoOrFuture::Error { errno },
     };
 
     ErrnoOrFuture::Future {
@@ -2298,10 +2401,14 @@ mod test {
     use futures::stream::FuturesUnordered;
     use futures::{FutureExt, StreamExt, select};
     use rustix::fs::{Mode, OFlags};
+    use rustix::io_uring::iovec;
     use rustix::net::{
-        AddressFamily, RecvFlags, SendFlags, SocketAddrUnix, SocketType, bind, listen, socket,
+        AddressFamily, RecvFlags, SendFlags, SocketAddrUnix, SocketType, bind, ipproto, listen,
+        socket,
     };
     use std::collections::HashMap;
+    use std::ffi::c_void;
+    use std::net::{SocketAddr, TcpListener};
     use std::num::ParseIntError;
     use std::time::{Duration, Instant};
     use std::{cell::Cell, rc::Rc};
@@ -2522,6 +2629,136 @@ mod test {
             .expect("Failed to recv");
 
         handle.await.unwrap();
+    }
+
+    #[crate::test]
+    async fn connect_unix_with_timeout_test() {
+        let listener_socket = socket(AddressFamily::UNIX, SocketType::STREAM, None)
+            .expect("Failed to create new UDS");
+        let addr = SocketAddrUnix::new_abstract_name("connect_unix_with_timeout_test".as_bytes())
+            .expect("Failed to create abstract name");
+        bind(&listener_socket, &addr).expect("Failed to bind socket");
+        listen(&listener_socket, 1).expect("Failed to listen");
+
+        let handle = spawn_task(async move {
+            let client_socket = socket(AddressFamily::UNIX, SocketType::STREAM, None)
+                .expect("Failed to create client socket");
+            operations::connect_unix_with_timeout(
+                &client_socket,
+                &addr,
+                Some(Duration::from_secs(5)),
+            )
+            .await
+            .unwrap();
+
+            let buf = [1u8; 8];
+            send(&client_socket, &buf, SendFlags::empty(), None)
+                .await
+                .expect("Failed to write to socket");
+        });
+
+        let socket = accept(&listener_socket).await.expect("Failed to accept");
+        let mut buf = [0u8; 8];
+        recv(&socket, &mut buf, RecvFlags::empty(), None)
+            .await
+            .expect("Failed to recv");
+
+        handle.await.unwrap();
+    }
+
+    #[crate::test]
+    async fn connect_unix_with_deadline_past_deadline_test() {
+        let client_socket = socket(AddressFamily::UNIX, SocketType::STREAM, None)
+            .expect("Failed to create client socket");
+        let addr = SocketAddrUnix::new_abstract_name(
+            "connect_unix_with_deadline_past_deadline".as_bytes(),
+        )
+        .expect("Failed to create abstract name");
+        let deadline = Instant::now()
+            .checked_sub(Duration::from_secs(1))
+            .expect("current Instant should support subtracting one second");
+
+        let error = operations::connect_unix_with_deadline(&client_socket, &addr, Some(deadline))
+            .await
+            .expect_err("Connect should fail before submitting an expired deadline");
+
+        assert_eq!(error, Errno::TIMEDOUT);
+    }
+
+    #[crate::test]
+    async fn connect_with_deadline_tcp_test() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("Failed to create TCP listener");
+        let addr = listener.local_addr().expect("Failed to read listener addr");
+        let client_socket = socket(AddressFamily::INET, SocketType::STREAM, Some(ipproto::TCP))
+            .expect("Failed to create client socket");
+
+        operations::connect_with_deadline(
+            &client_socket,
+            &addr,
+            Some(Instant::now() + Duration::from_secs(5)),
+        )
+        .await
+        .expect("Failed to connect before deadline");
+    }
+
+    #[crate::test]
+    async fn connect_with_timeout_tcp_test() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("Failed to create TCP listener");
+        let addr = listener.local_addr().expect("Failed to read listener addr");
+        let client_socket = socket(AddressFamily::INET, SocketType::STREAM, Some(ipproto::TCP))
+            .expect("Failed to create client socket");
+
+        operations::connect_with_timeout(&client_socket, &addr, Some(Duration::from_secs(5)))
+            .await
+            .expect("Failed to connect before timeout");
+    }
+
+    #[crate::test]
+    async fn connect_with_deadline_past_deadline_test() {
+        let client_socket = socket(AddressFamily::INET, SocketType::STREAM, Some(ipproto::TCP))
+            .expect("Failed to create client socket");
+        let addr = SocketAddr::from(([127, 0, 0, 1], 9));
+        let deadline = Instant::now()
+            .checked_sub(Duration::from_secs(1))
+            .expect("current Instant should support subtracting one second");
+
+        let error = operations::connect_with_deadline(&client_socket, &addr, Some(deadline))
+            .await
+            .expect_err("Connect should fail before submitting an expired deadline");
+
+        assert_eq!(error, Errno::TIMEDOUT);
+    }
+
+    #[crate::test]
+    async fn readv_with_deadline_test() {
+        let (read, write) = crate::pipe::bipipe();
+        operations::write(&write, b"abcdef").await.unwrap();
+
+        let mut buf1 = [0u8; 2];
+        let mut buf2 = [0u8; 4];
+        let iovecs = [
+            iovec {
+                iov_base: buf1.as_mut_ptr() as *mut c_void,
+                iov_len: buf1.len(),
+            },
+            iovec {
+                iov_base: buf2.as_mut_ptr() as *mut c_void,
+                iov_len: buf2.len(),
+            },
+        ];
+
+        let amount = operations::readv_with_deadline(
+            &read,
+            &iovecs,
+            None,
+            Some(Instant::now() + Duration::from_secs(5)),
+        )
+        .await
+        .expect("Failed to readv before deadline");
+
+        assert_eq!(amount, 6);
+        assert_eq!(&buf1, b"ab");
+        assert_eq!(&buf2, b"cdef");
     }
 
     #[crate::test]

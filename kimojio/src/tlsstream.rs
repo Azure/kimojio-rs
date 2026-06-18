@@ -15,7 +15,7 @@ use crate::{
 };
 use foreign_types_shared::ForeignTypeRef;
 use futures::TryFutureExt;
-use kimojio_tls::TlsServer;
+use kimojio_tls::{TlsServer, TlsServerShared};
 use std::borrow::Borrow;
 use std::io::IoSlice;
 use std::rc::Rc;
@@ -66,13 +66,83 @@ impl SocketPair for Rc<SharedSocketPair> {
 }
 
 pub struct TlsReadStream {
-    ssl: TlsServer,
+    ssl: TlsServerShared,
     socket: Rc<SharedSocketPair>,
 }
 
 pub struct TlsWriteStream {
-    ssl: TlsServer,
+    ssl: TlsServerShared,
     socket: Rc<SharedSocketPair>,
+}
+
+trait TlsIo {
+    fn read(&mut self, buffer: &mut [u8]) -> kimojio_tls::Response;
+    fn write(&mut self, buffer: &[u8]) -> kimojio_tls::Response;
+    fn shutdown(&mut self) -> kimojio_tls::Response;
+    fn push_buffer_capacity(&self) -> Option<usize>;
+    fn push_bytes(&self, bytes: &[u8]) -> Option<usize>;
+    fn copy_pull_buffer(&self) -> Option<Vec<u8>>;
+    fn use_pull_buffer(&mut self, amount: usize);
+}
+
+impl TlsIo for TlsServer {
+    fn read(&mut self, buffer: &mut [u8]) -> kimojio_tls::Response {
+        self.read(buffer)
+    }
+
+    fn write(&mut self, buffer: &[u8]) -> kimojio_tls::Response {
+        self.write(buffer)
+    }
+
+    fn shutdown(&mut self) -> kimojio_tls::Response {
+        self.shutdown()
+    }
+
+    fn push_buffer_capacity(&self) -> Option<usize> {
+        self.push_buffer_capacity()
+    }
+
+    fn push_bytes(&self, bytes: &[u8]) -> Option<usize> {
+        self.push_bytes(bytes)
+    }
+
+    fn copy_pull_buffer(&self) -> Option<Vec<u8>> {
+        self.copy_pull_buffer()
+    }
+
+    fn use_pull_buffer(&mut self, amount: usize) {
+        self.use_pull_buffer(amount);
+    }
+}
+
+impl TlsIo for TlsServerShared {
+    fn read(&mut self, buffer: &mut [u8]) -> kimojio_tls::Response {
+        self.read(buffer)
+    }
+
+    fn write(&mut self, buffer: &[u8]) -> kimojio_tls::Response {
+        self.write(buffer)
+    }
+
+    fn shutdown(&mut self) -> kimojio_tls::Response {
+        self.shutdown()
+    }
+
+    fn push_buffer_capacity(&self) -> Option<usize> {
+        self.push_buffer_capacity()
+    }
+
+    fn push_bytes(&self, bytes: &[u8]) -> Option<usize> {
+        self.push_bytes(bytes)
+    }
+
+    fn copy_pull_buffer(&self) -> Option<Vec<u8>> {
+        self.copy_pull_buffer()
+    }
+
+    fn use_pull_buffer(&mut self, amount: usize) {
+        self.use_pull_buffer(amount);
+    }
 }
 
 impl TlsStream {
@@ -151,8 +221,7 @@ impl SplittableStream for TlsStream {
             })
         };
         let write_socket = read_socket.clone();
-        let read_ssl = self.ssl;
-        let write_ssl = read_ssl.clone();
+        let (read_ssl, write_ssl) = self.ssl.split();
         Ok((
             TlsReadStream {
                 ssl: read_ssl,
@@ -167,18 +236,22 @@ impl SplittableStream for TlsStream {
 }
 
 async fn try_read(
-    ssl: &mut TlsServer,
+    ssl: &mut impl TlsIo,
     socket: &impl SocketPair,
     deadline: Option<Instant>,
 ) -> Result<(), Errno> {
     let socket = socket.read_socket().await?;
     if let Some(socket) = socket.borrow() {
-        if let Some(buffer) = ssl.get_push_buffer() {
-            let amount = operations::read_with_deadline(socket, buffer, deadline).await?;
+        if let Some(capacity) = ssl.push_buffer_capacity() {
+            let mut buffer = vec![0; capacity];
+            let amount = operations::read_with_deadline(socket, &mut buffer, deadline).await?;
             if amount == 0 {
                 return Err(Errno::from_raw_os_error(libc::EPIPE));
             }
-            ssl.use_push_buffer(amount);
+            let pushed = ssl
+                .push_bytes(&buffer[..amount])
+                .expect("BIO write buffer disappeared after socket read");
+            assert_eq!(pushed, amount);
         }
         Ok(())
     } else {
@@ -187,7 +260,7 @@ async fn try_read(
 }
 
 async fn try_write(
-    ssl: &mut TlsServer,
+    ssl: &mut impl TlsIo,
     socket: &impl SocketPair,
     deadline: Option<Instant>,
 ) -> Result<(), Errno> {
@@ -197,8 +270,8 @@ async fn try_write(
         // buffer by the length of the full buffer copied into the BIO rather than
         // the amount of data written to the socket here. Need to fully exhaust
         // the BIO here to keep the bookkeeping in sync
-        while let Some(buffer) = ssl.get_pull_buffer() {
-            let amount = operations::write_with_deadline(socket, buffer, deadline).await?;
+        while let Some(buffer) = ssl.copy_pull_buffer() {
+            let amount = operations::write_with_deadline(socket, &buffer, deadline).await?;
             if amount == 0 {
                 return Err(Errno::from_raw_os_error(libc::EPIPE));
             }
@@ -214,7 +287,7 @@ async fn try_write(
 // multiple write_internal calls to accumulate data for a single write
 // to the wire.
 async fn write_internal(
-    ssl: &mut TlsServer,
+    ssl: &mut impl TlsIo,
     socket: &impl SocketPair,
     mut buffer: &[u8],
     deadline: Option<Instant>,
@@ -259,7 +332,7 @@ async fn handle_tls_error(
 }
 
 async fn try_read_impl(
-    ssl: &mut TlsServer,
+    ssl: &mut impl TlsIo,
     socket: &impl SocketPair,
     buffer: &mut [u8],
     deadline: Option<Instant>,
@@ -276,7 +349,7 @@ async fn try_read_impl(
 }
 
 async fn read_impl(
-    ssl: &mut TlsServer,
+    ssl: &mut impl TlsIo,
     socket: &impl SocketPair,
     mut buffer: &mut [u8],
     deadline: Option<Instant>,
@@ -296,7 +369,7 @@ async fn read_impl(
 }
 
 async fn writev_impl(
-    ssl: &mut TlsServer,
+    ssl: &mut impl TlsIo,
     socket: &impl SocketPair,
     buffers: &mut [IoSlice<'_>],
     deadline: Option<Instant>,
@@ -309,7 +382,7 @@ async fn writev_impl(
 }
 
 async fn write_impl(
-    ssl: &mut TlsServer,
+    ssl: &mut impl TlsIo,
     socket: &impl SocketPair,
     buffer: &[u8],
     deadline: Option<Instant>,
@@ -319,7 +392,7 @@ async fn write_impl(
     try_write(ssl, socket, deadline).await
 }
 
-async fn shutdown_impl(ssl: &mut TlsServer, socket: &impl SocketPair) -> Result<(), Errno> {
+async fn shutdown_impl(ssl: &mut impl TlsIo, socket: &impl SocketPair) -> Result<(), Errno> {
     loop {
         match ssl.shutdown() {
             kimojio_tls::Response::Success(_) => return Ok(()),

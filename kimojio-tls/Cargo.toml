@@ -9,7 +9,10 @@ readme.workspace = true
 description = "Kimojio OpenSSL integration"
 
 [dependencies]
+openssl-sys.workspace = true
 rustix-uring.workspace = true
 
-[build-dependencies]
-cc.workspace = true
+[dev-dependencies]
+foreign-types-shared.workspace = true
+openssl.workspace = true
+static_assertions.workspace = true

@@ -12,11 +12,12 @@
 //! TODO: implement client authentication
 //!
 use crate::{Errno, OwnedFd, operations, tlsstream::TlsStream, tracing::Events};
-use kimojio_tls::{TlsServerContext, TlsServerError};
+use foreign_types_shared::ForeignType;
+use kimojio_tls::{TlsServer, TlsServerError};
 use std::time::Instant;
 
 pub struct TlsContext {
-    ssl_ctx: TlsServerContext,
+    ssl_ctx: openssl::ssl::SslContext,
 }
 
 impl TlsContext {
@@ -24,11 +25,7 @@ impl TlsContext {
     /// This will replace the client and server context creation methods in the future.
     /// TODO: KTLS option is not set compared to the original c wrapper implementation.
     pub fn from_openssl(ctx: openssl::ssl::SslContext) -> Self {
-        use foreign_types_shared::ForeignType;
-        let ssl_ctx = TlsServerContext::from_raw(ctx.as_ptr() as *mut std::ffi::c_void);
-        // Transfer the ownership of the openssl wrapper to TlsContext
-        std::mem::forget(ctx);
-        Self { ssl_ctx }
+        Self { ssl_ctx: ctx }
     }
 
     /// Creates a TLS "server" socket
@@ -38,7 +35,7 @@ impl TlsContext {
         socket: OwnedFd,
         deadline: Option<Instant>,
     ) -> Result<TlsStream, Errno> {
-        let ssl = self.ssl_ctx.server(bufsize).map_err(as_io_error)?;
+        let ssl = self.create_ssl(bufsize, true)?;
         let mut server = TlsStream::new_tlsstream(ssl, socket);
         server.server_side_handshake(deadline).await?;
         Ok(server)
@@ -51,11 +48,39 @@ impl TlsContext {
         socket: OwnedFd,
         deadline: Option<Instant>,
     ) -> Result<TlsStream, Errno> {
-        let ssl = self.ssl_ctx.client(bufsize).map_err(as_io_error)?;
+        let ssl = self.create_ssl(bufsize, false)?;
         let mut client = TlsStream::new_tlsstream(ssl, socket);
         client.client_side_handshake(deadline).await?;
         Ok(client)
     }
+
+    fn create_ssl(&self, bufsize: usize, is_server: bool) -> Result<TlsServer, Errno> {
+        let ssl = openssl::ssl::Ssl::new(&self.ssl_ctx).map_err(as_openssl_error)?;
+        let raw_ssl = ssl.as_ptr() as *mut std::ffi::c_void;
+        std::mem::forget(ssl);
+        // SAFETY: `raw_ssl` came from a freshly-created `openssl::ssl::Ssl`.
+        // We forgot the Rust owner, transferring ownership to kimojio_tls.
+        unsafe { TlsServer::from_raw_ssl(raw_ssl, bufsize, is_server) }.map_err(as_io_error)
+    }
+
+    #[cfg(test)]
+    fn get_min_proto_version(&self) -> i32 {
+        // SAFETY: `ssl_ctx` is owned by this TlsContext and remains valid for this call.
+        unsafe {
+            kimojio_tls::get_min_proto_version(self.ssl_ctx.as_ptr() as *mut std::ffi::c_void)
+        }
+    }
+}
+
+fn as_openssl_error(error: openssl::error::ErrorStack) -> Errno {
+    let activity_id = operations::get_activity_id();
+    for error in error.errors() {
+        operations::write_event(Events::TlsError {
+            code: error.code(),
+            activity_id,
+        })
+    }
+    Errno::from_raw_os_error(crate::EPROTO)
 }
 
 pub(crate) fn as_io_error(result: TlsServerError) -> Errno {
@@ -329,7 +354,7 @@ pub(crate) mod test {
         .unwrap();
 
         // TLS 1.3 version is 0x0304
-        let min_version = server_ctx.ssl_ctx.get_min_proto_version();
+        let min_version = server_ctx.get_min_proto_version();
         assert_eq!(
             min_version, 0x0304,
             "Server context minimum TLS version should be TLS 1.3 (0x0304)"
@@ -344,7 +369,7 @@ pub(crate) mod test {
         )
         .unwrap();
 
-        let min_version = client_ctx.ssl_ctx.get_min_proto_version();
+        let min_version = client_ctx.get_min_proto_version();
         assert_eq!(
             min_version, 0x0304,
             "Client context minimum TLS version should be TLS 1.3 (0x0304)"
@@ -823,10 +848,21 @@ pub(crate) mod test {
         use std::ffi::CStr;
         use std::{ffi::CString, fs::File, io::Write, process::Command};
 
-        use openssl::error::ErrorStack;
-        use rcgen::{
-            BasicConstraints, Certificate, CertificateParams, DnType, IsCa, Issuer, KeyPair,
-            KeyUsagePurpose,
+        use openssl::{
+            asn1::Asn1Time,
+            bn::{BigNum, MsbOption},
+            error::ErrorStack,
+            hash::MessageDigest,
+            nid::Nid,
+            pkey::{PKey, Private},
+            rsa::Rsa,
+            x509::{
+                X509, X509Name, X509NameRef,
+                extension::{
+                    AuthorityKeyIdentifier, BasicConstraints, ExtendedKeyUsage, KeyUsage,
+                    SubjectAlternativeName, SubjectKeyIdentifier,
+                },
+            },
         };
         use rustix::io_uring::{Mode, OFlags};
         use std::fs;
@@ -1234,46 +1270,196 @@ certificate = {ca_cert_file}
             ))
         }
 
-        fn new_ca() -> std::io::Result<(Certificate, KeyPair)> {
-            let mut params = CertificateParams::default();
-            params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
-            params
-                .distinguished_name
-                .push(DnType::OrganizationName, "Test CA");
-            params.key_usages.push(KeyUsagePurpose::DigitalSignature);
-            params.key_usages.push(KeyUsagePurpose::KeyCertSign);
-            params.key_usages.push(KeyUsagePurpose::CrlSign);
-            let key_pair = KeyPair::generate().expect("CA key generation failed");
-            Ok((
-                params
-                    .self_signed(&key_pair)
-                    .expect("Signing CA certificate failed"),
-                key_pair,
-            ))
+        fn openssl_error(error: ErrorStack) -> std::io::Error {
+            std::io::Error::other(error)
         }
 
-        fn new_self_signed_certificate(
+        fn new_key_pair() -> std::io::Result<PKey<Private>> {
+            Rsa::generate(2048)
+                .and_then(PKey::from_rsa)
+                .map_err(openssl_error)
+        }
+
+        fn random_serial_number() -> Result<openssl::asn1::Asn1Integer, ErrorStack> {
+            let mut serial = BigNum::new()?;
+            serial.rand(128, MsbOption::ONE, false)?;
+            serial.to_asn1_integer()
+        }
+
+        fn new_ca_subject() -> Result<X509Name, ErrorStack> {
+            let mut name = X509Name::builder()?;
+            name.append_entry_by_nid(Nid::ORGANIZATIONNAME, "Test CA")?;
+            Ok(name.build())
+        }
+
+        fn new_subject(common_name: &str) -> Result<X509Name, ErrorStack> {
+            let mut name = X509Name::builder()?;
+            name.append_entry_by_nid(Nid::COMMONNAME, common_name)?;
+            Ok(name.build())
+        }
+
+        fn set_common_cert_fields(
+            builder: &mut openssl::x509::X509Builder,
+            subject: &X509NameRef,
+            issuer: &X509NameRef,
+            key: &PKey<Private>,
+        ) -> Result<(), ErrorStack> {
+            let serial = random_serial_number()?;
+            builder.set_version(2)?;
+            builder.set_serial_number(serial.as_ref())?;
+            builder.set_subject_name(subject)?;
+            builder.set_issuer_name(issuer)?;
+            builder.set_pubkey(key)?;
+            builder.set_not_before(Asn1Time::days_from_now(0)?.as_ref())?;
+            builder.set_not_after(Asn1Time::days_from_now(365)?.as_ref())?;
+            Ok(())
+        }
+
+        fn new_ca() -> std::io::Result<(X509, PKey<Private>)> {
+            let key_pair = new_key_pair()?;
+            let subject = new_ca_subject().map_err(openssl_error)?;
+            let mut cert = X509::builder().map_err(openssl_error)?;
+            set_common_cert_fields(&mut cert, &subject, &subject, &key_pair)
+                .map_err(openssl_error)?;
+            cert.append_extension(
+                BasicConstraints::new()
+                    .critical()
+                    .ca()
+                    .build()
+                    .map_err(openssl_error)?,
+            )
+            .map_err(openssl_error)?;
+            cert.append_extension(
+                KeyUsage::new()
+                    .critical()
+                    .digital_signature()
+                    .key_cert_sign()
+                    .crl_sign()
+                    .build()
+                    .map_err(openssl_error)?,
+            )
+            .map_err(openssl_error)?;
+            let ctx = cert.x509v3_context(None, None);
+            cert.append_extension(
+                SubjectKeyIdentifier::new()
+                    .build(&ctx)
+                    .map_err(openssl_error)?,
+            )
+            .map_err(openssl_error)?;
+            cert.sign(&key_pair, MessageDigest::sha256())
+                .map_err(openssl_error)?;
+            Ok((cert.build(), key_pair))
+        }
+
+        fn new_signed_certificate(
             san: Vec<String>,
-        ) -> std::io::Result<(Certificate, KeyPair)> {
-            let key_pair =
-                KeyPair::generate().expect("self signed certificate key generation failed");
-            let cert = CertificateParams::new(san)
-                .expect("Creating self signed certificate parameters failed")
-                .self_signed(&key_pair)
-                .expect("Self Signing certificate failed");
+            key_pair: &PKey<Private>,
+            ca_cert: &X509,
+            ca_key: &PKey<Private>,
+            extended_key_usage: impl FnOnce(&mut ExtendedKeyUsage),
+        ) -> std::io::Result<X509> {
+            let common_name = san.first().map(String::as_str).unwrap_or("kimojio.test");
+            let subject = new_subject(common_name).map_err(openssl_error)?;
+            let mut cert = X509::builder().map_err(openssl_error)?;
+            set_common_cert_fields(&mut cert, &subject, ca_cert.subject_name(), key_pair)
+                .map_err(openssl_error)?;
+            cert.append_extension(
+                BasicConstraints::new()
+                    .critical()
+                    .build()
+                    .map_err(openssl_error)?,
+            )
+            .map_err(openssl_error)?;
+            cert.append_extension(
+                KeyUsage::new()
+                    .critical()
+                    .digital_signature()
+                    .key_encipherment()
+                    .build()
+                    .map_err(openssl_error)?,
+            )
+            .map_err(openssl_error)?;
+            let mut eku = ExtendedKeyUsage::new();
+            extended_key_usage(&mut eku);
+            cert.append_extension(eku.build().map_err(openssl_error)?)
+                .map_err(openssl_error)?;
+            if !san.is_empty() {
+                let mut san_extension = SubjectAlternativeName::new();
+                for name in san {
+                    san_extension.dns(&name);
+                }
+                let ctx = cert.x509v3_context(Some(ca_cert), None);
+                cert.append_extension(san_extension.build(&ctx).map_err(openssl_error)?)
+                    .map_err(openssl_error)?;
+            }
+            let ctx = cert.x509v3_context(Some(ca_cert), None);
+            cert.append_extension(
+                SubjectKeyIdentifier::new()
+                    .build(&ctx)
+                    .map_err(openssl_error)?,
+            )
+            .map_err(openssl_error)?;
+            let ctx = cert.x509v3_context(Some(ca_cert), None);
+            cert.append_extension(
+                AuthorityKeyIdentifier::new()
+                    .keyid(false)
+                    .build(&ctx)
+                    .map_err(openssl_error)?,
+            )
+            .map_err(openssl_error)?;
+            cert.sign(ca_key, MessageDigest::sha256())
+                .map_err(openssl_error)?;
+            Ok(cert.build())
+        }
+
+        fn new_self_signed_certificate(san: Vec<String>) -> std::io::Result<(X509, PKey<Private>)> {
+            let key_pair = new_key_pair()?;
+            let common_name = san.first().map(String::as_str).unwrap_or("kimojio.test");
+            let subject = new_subject(common_name).map_err(openssl_error)?;
+            let mut cert = X509::builder().map_err(openssl_error)?;
+            set_common_cert_fields(&mut cert, &subject, &subject, &key_pair)
+                .map_err(openssl_error)?;
+            cert.append_extension(
+                BasicConstraints::new()
+                    .critical()
+                    .build()
+                    .map_err(openssl_error)?,
+            )
+            .map_err(openssl_error)?;
+            cert.append_extension(
+                KeyUsage::new()
+                    .critical()
+                    .digital_signature()
+                    .key_encipherment()
+                    .build()
+                    .map_err(openssl_error)?,
+            )
+            .map_err(openssl_error)?;
+            if !san.is_empty() {
+                let mut san_extension = SubjectAlternativeName::new();
+                for name in san {
+                    san_extension.dns(&name);
+                }
+                let ctx = cert.x509v3_context(None, None);
+                cert.append_extension(san_extension.build(&ctx).map_err(openssl_error)?)
+                    .map_err(openssl_error)?;
+            }
+            cert.sign(&key_pair, MessageDigest::sha256())
+                .map_err(openssl_error)?;
+            let cert = cert.build();
             Ok((cert, key_pair))
         }
 
         fn create_file_and_write_contents(
             file: &std::path::Path,
-            contents: &str,
+            contents: &[u8],
         ) -> std::io::Result<()> {
             if let Some(parent) = file.parent() {
                 fs::create_dir_all(parent)?;
             }
             File::create(file)
                 .unwrap_or_else(|_| panic!("Creating {} failed", file.to_str().unwrap()))
-                .write_all(contents.as_bytes())
+                .write_all(contents)
                 .unwrap_or_else(|_| {
                     panic!("Writing contents into {} failed", file.to_str().unwrap())
                 });
@@ -1293,14 +1479,20 @@ certificate = {ca_cert_file}
         ) -> std::io::Result<()> {
             let (ca_cert, ca_key) = new_ca()?;
             println!("[Test] Generating self signed CA certificate {ca_cert_file:#?}");
-            create_file_and_write_contents(ca_cert_file, &ca_cert.pem())?;
-            create_file_and_write_contents(ca_key_file, &ca_key.serialize_pem())?;
+            create_file_and_write_contents(
+                ca_cert_file,
+                &ca_cert.to_pem().map_err(openssl_error)?,
+            )?;
+            create_file_and_write_contents(
+                ca_key_file,
+                &ca_key.private_key_to_pem_pkcs8().map_err(openssl_error)?,
+            )?;
 
             println!(
                 "[Test] Generating self signed server certificate {server_cert_file:#?} and key {server_key_file:#?}"
             );
             // create server key and cert
-            let server_key = KeyPair::generate().expect("Server key generation failed");
+            let server_key = new_key_pair()?;
             let mut server_san: Vec<String> = Vec::new();
             if !server_name.is_empty() {
                 server_san.push(
@@ -1310,20 +1502,32 @@ certificate = {ca_cert_file}
                         .to_string(),
                 );
             }
-            let issuer = Issuer::from_ca_cert_pem(&ca_cert.pem(), ca_key).unwrap();
-            let server_cert = CertificateParams::new(server_san)
-                .expect("Creating server certificate parameters failed")
-                .signed_by(&server_key, &issuer)
-                .expect("Signing server certificate failed");
+            let server_cert = new_signed_certificate(
+                server_san,
+                &server_key,
+                &ca_cert,
+                &ca_key,
+                |extended_key_usage| {
+                    extended_key_usage.server_auth();
+                },
+            )?;
 
-            create_file_and_write_contents(server_cert_file, &server_cert.pem())?;
-            create_file_and_write_contents(server_key_file, &server_key.serialize_pem())?;
+            create_file_and_write_contents(
+                server_cert_file,
+                &server_cert.to_pem().map_err(openssl_error)?,
+            )?;
+            create_file_and_write_contents(
+                server_key_file,
+                &server_key
+                    .private_key_to_pem_pkcs8()
+                    .map_err(openssl_error)?,
+            )?;
 
             println!(
                 "[Test] Generating self signed client certificate {client_cert_file:#?} and key {client_key_file:#?}"
             );
             // create client key and cert
-            let client_key = KeyPair::generate().expect("Client key generation failed");
+            let client_key = new_key_pair()?;
             let mut client_san: Vec<String> = Vec::new();
             if !client_name.is_empty() {
                 client_san.push(
@@ -1333,13 +1537,26 @@ certificate = {ca_cert_file}
                         .to_string(),
                 );
             }
-            let client_cert = CertificateParams::new(client_san)
-                .expect("Creating client certificate parameters failed")
-                .signed_by(&client_key, &issuer)
-                .expect("Signing client certificate failed");
+            let client_cert = new_signed_certificate(
+                client_san,
+                &client_key,
+                &ca_cert,
+                &ca_key,
+                |extended_key_usage| {
+                    extended_key_usage.client_auth();
+                },
+            )?;
 
-            create_file_and_write_contents(client_cert_file, &client_cert.pem())?;
-            create_file_and_write_contents(client_key_file, &client_key.serialize_pem())?;
+            create_file_and_write_contents(
+                client_cert_file,
+                &client_cert.to_pem().map_err(openssl_error)?,
+            )?;
+            create_file_and_write_contents(
+                client_key_file,
+                &client_key
+                    .private_key_to_pem_pkcs8()
+                    .map_err(openssl_error)?,
+            )?;
             Ok(())
         }
 
@@ -1389,8 +1606,11 @@ certificate = {ca_cert_file}
             let key_file = std::path::Path::new(key_name);
             println!("[Test] Generating self signed certificate {cert_name} and key {key_name}");
             let (cert, key) = new_self_signed_certificate(san)?;
-            create_file_and_write_contents(cert_file, &cert.pem())?;
-            create_file_and_write_contents(key_file, &key.serialize_pem())?;
+            create_file_and_write_contents(cert_file, &cert.to_pem().map_err(openssl_error)?)?;
+            create_file_and_write_contents(
+                key_file,
+                &key.private_key_to_pem_pkcs8().map_err(openssl_error)?,
+            )?;
             Ok(())
         }
     }

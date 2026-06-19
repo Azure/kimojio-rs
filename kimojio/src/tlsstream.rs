@@ -13,7 +13,6 @@ use crate::{
     AsyncLock, AsyncStreamRead, AsyncStreamWrite, CanceledError, Errno, OwnedFd, SplittableStream,
     operations, try_clone_owned_fd,
 };
-use foreign_types_shared::ForeignTypeRef;
 use futures::TryFutureExt;
 use kimojio_tls::{TlsServer, TlsServerShared};
 use std::borrow::Borrow;
@@ -196,10 +195,7 @@ impl TlsStream {
 
     /// Gets the SSL object reference.
     pub fn get_ssl(&self) -> &openssl::ssl::SslRef {
-        let raw_ssl = self.ssl.get_ssl_raw();
-        // Safety: The raw ptr in SslRef is valid for lifetime as self,
-        // and SslRef does not own the underlying SSL object.
-        unsafe { openssl::ssl::SslRef::from_ptr(raw_ssl as *mut _) }
+        self.ssl.get_ssl()
     }
 }
 

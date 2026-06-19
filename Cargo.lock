@@ -457,7 +457,6 @@ name = "kimojio"
 version = "0.17.0"
 dependencies = [
  "criterion",
- "foreign-types-shared",
  "futures",
  "impls",
  "intrusive-collections",

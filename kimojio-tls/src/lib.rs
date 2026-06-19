@@ -1,10 +1,16 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 use std::ffi::CStr;
-use std::os::raw::{c_char, c_int, c_ulong, c_void};
+use std::os::raw::{c_char, c_int, c_ulong};
 use std::ptr::{NonNull, null_mut};
 use std::{cell::Cell, rc::Rc};
 
+use foreign_types_shared::{ForeignType, ForeignTypeRef};
+use openssl::{
+    error::ErrorStack,
+    ssl::{Ssl, SslContextRef, SslRef},
+    version as openssl_version,
+};
 use openssl_sys as ffi;
 use rustix_uring::Errno;
 
@@ -120,7 +126,7 @@ pub struct TlsServerShared {
 }
 
 struct TlsServerInner {
-    ssl: NonNull<ffi::SSL>,
+    ssl: Ssl,
     application_bio: ApplicationBio,
     state: Cell<TlsHandleState>,
 }
@@ -145,21 +151,12 @@ pub enum Response {
     WantWrite,
 }
 
-fn get_error() -> Option<u64> {
-    let code = unsafe { ffi::ERR_get_error() };
-    if code == 0 {
-        None
-    } else {
-        Some(from_openssl_ulong(code))
-    }
-}
-
 fn get_ssl_error() -> Vec<u64> {
-    let mut codes: Vec<u64> = Vec::with_capacity(4);
-    while let Some(code) = get_error() {
-        codes.push(code);
-    }
-    codes
+    ErrorStack::get()
+        .errors()
+        .iter()
+        .map(|error| from_openssl_ulong(error.code()))
+        .collect()
 }
 
 fn ssl_stack_error() -> Response {
@@ -185,13 +182,13 @@ fn ssl_error_response(error: c_int) -> Response {
     }
 }
 
-fn handle_io_failure(ssl: NonNull<ffi::SSL>, result: c_int) -> Response {
+fn handle_io_failure(ssl: *mut ffi::SSL, result: c_int) -> Response {
     if result > 0 {
         Response::Success(result as usize)
     } else if result == 0 {
         Response::Eof
     } else {
-        ssl_error_response(unsafe { ffi::SSL_get_error(ssl.as_ptr(), result) })
+        ssl_error_response(unsafe { ffi::SSL_get_error(ssl, result) })
     }
 }
 
@@ -203,8 +200,8 @@ fn ssl_io_response_from_error(result: c_int, ssl_error: c_int) -> Response {
     }
 }
 
-fn ssl_io_response(ssl: NonNull<ffi::SSL>, result: c_int) -> Response {
-    ssl_io_response_from_error(result, unsafe { ffi::SSL_get_error(ssl.as_ptr(), result) })
+fn ssl_io_response(ssl: *mut ffi::SSL, result: c_int) -> Response {
+    ssl_io_response_from_error(result, unsafe { ffi::SSL_get_error(ssl, result) })
 }
 
 fn c_int_len(len: usize) -> Result<c_int, TlsServerError> {
@@ -297,59 +294,42 @@ impl Drop for ApplicationBioCallbackGuard<'_> {
 }
 
 impl Drop for TlsServerInner {
-    fn drop(&mut self) {
-        unsafe { ffi::SSL_free(self.ssl.as_ptr()) };
-    }
+    fn drop(&mut self) {}
 }
 
-/// Gets the minimum TLS protocol version from a raw `SSL_CTX*`.
-///
-/// # Safety
-///
-/// `ctx` must be a non-null, valid `SSL_CTX*`.
-pub unsafe fn get_min_proto_version(ctx: *mut c_void) -> i32 {
-    unsafe { ffi::SSL_CTX_get_min_proto_version(ctx.cast()) }
+/// Gets the minimum TLS protocol version from an OpenSSL context.
+pub fn get_min_proto_version(ctx: &SslContextRef) -> i32 {
+    unsafe { ffi::SSL_CTX_get_min_proto_version(ctx.as_ptr()) }
 }
 
 impl TlsServer {
-    /// Creates a TLS handle from an owned OpenSSL `SSL*`.
-    ///
-    /// # Safety
-    ///
-    /// `ssl` must be a non-null `SSL*` whose ownership is transferred to this
-    /// function. The returned `TlsServer` will free it with `SSL_free`; if
-    /// handle creation fails, this function takes ownership and frees it before
-    /// returning the error.
-    pub unsafe fn from_raw_ssl(
-        ssl: *mut c_void,
+    /// Creates a TLS handle from an owned OpenSSL `Ssl`.
+    pub fn from_ssl(
+        mut ssl: Ssl,
         bufsize: usize,
         is_server: bool,
     ) -> Result<TlsServer, TlsServerError> {
-        let ssl = NonNull::new(ssl.cast()).ok_or(TlsServerError::Errno(Errno::INVAL))?;
         let mut ssl_bio = null_mut();
         let mut server_io = null_mut();
         let result = unsafe { BIO_new_bio_pair(&mut ssl_bio, bufsize, &mut server_io, bufsize) };
         if result != 1 {
-            unsafe { ffi::SSL_free(ssl.as_ptr()) };
             return match ssl_stack_error() {
                 Response::Fail(error) => Err(error),
                 _ => unreachable!(),
             };
         }
-
         let Some(ssl_bio) = NonNull::new(ssl_bio) else {
-            unsafe { ffi::SSL_free(ssl.as_ptr()) };
             return Err(TlsServerError::Errno(Errno::INVAL));
         };
         let Some(server_io) = NonNull::new(server_io) else {
-            unsafe { ffi::SSL_free(ssl.as_ptr()) };
+            unsafe { ffi::BIO_free_all(ssl_bio.as_ptr()) };
             return Err(TlsServerError::Errno(Errno::INVAL));
         };
 
         if is_server {
-            unsafe { ffi::SSL_set_accept_state(ssl.as_ptr()) };
+            ssl.set_accept_state();
         } else {
-            unsafe { ffi::SSL_set_connect_state(ssl.as_ptr()) };
+            ssl.set_connect_state();
         }
 
         unsafe { ffi::SSL_set_bio(ssl.as_ptr(), ssl_bio.as_ptr(), ssl_bio.as_ptr()) };
@@ -388,8 +368,8 @@ macro_rules! impl_tls_server_methods {
             }
 
             /// Gets the reference to SSL object.
-            pub fn get_ssl_raw(&self) -> *mut c_void {
-                self.inner.get_ssl_raw()
+            pub fn get_ssl(&self) -> &SslRef {
+                self.inner.get_ssl()
             }
 
             pub fn shutdown(&mut self) -> Response {
@@ -452,16 +432,17 @@ impl TlsServerInner {
         }
     }
 
-    fn get_ssl_raw(&self) -> *mut c_void {
-        self.ssl.as_ptr().cast()
+    fn get_ssl(&self) -> &SslRef {
+        &self.ssl
     }
 
     fn shutdown(&self) -> Response {
-        let result = unsafe { ffi::SSL_shutdown(self.ssl.as_ptr()) };
+        let ssl = self.ssl.as_ptr();
+        let result = unsafe { ffi::SSL_shutdown(ssl) };
         if result == 0 {
             Response::WantWrite
         } else {
-            handle_io_failure(self.ssl, result)
+            handle_io_failure(ssl, result)
         }
     }
 
@@ -474,9 +455,9 @@ impl TlsServerInner {
             Ok(length) => length,
             Err(error) => return Response::Fail(error),
         };
-        let result =
-            unsafe { ffi::SSL_read(self.ssl.as_ptr(), buffer.as_mut_ptr().cast(), length) };
-        ssl_io_response(self.ssl, result)
+        let ssl = self.ssl.as_ptr();
+        let result = unsafe { ffi::SSL_read(ssl, buffer.as_mut_ptr().cast(), length) };
+        ssl_io_response(ssl, result)
     }
 
     fn write(&self, buffer: &[u8]) -> Response {
@@ -488,8 +469,9 @@ impl TlsServerInner {
             Ok(length) => length,
             Err(error) => return Response::Fail(error),
         };
-        let result = unsafe { ffi::SSL_write(self.ssl.as_ptr(), buffer.as_ptr().cast(), length) };
-        ssl_io_response(self.ssl, result)
+        let ssl = self.ssl.as_ptr();
+        let result = unsafe { ffi::SSL_write(ssl, buffer.as_ptr().cast(), length) };
+        ssl_io_response(ssl, result)
     }
 
     fn push_buffer_capacity(&self) -> Option<usize> {
@@ -523,7 +505,7 @@ impl Clone for TlsServerShared {
 }
 
 pub fn version() -> (u64, u64, u64) {
-    let version = from_openssl_ulong(unsafe { ffi::OpenSSL_version_num() });
+    let version = openssl_version::number() as u64;
     (
         (version >> 28) & 0xf,
         (version >> 20) & 0xff,
@@ -534,7 +516,6 @@ pub fn version() -> (u64, u64, u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use foreign_types_shared::ForeignType;
     use openssl::ssl::{Ssl, SslContext, SslMethod};
     use static_assertions::{assert_impl_all, assert_not_impl_any};
 
@@ -545,9 +526,7 @@ mod tests {
     fn test_tls_server(is_server: bool) -> TlsServer {
         let ctx = SslContext::builder(SslMethod::tls()).unwrap().build();
         let ssl = Ssl::new(&ctx).unwrap();
-        let raw_ssl = ssl.as_ptr().cast();
-        std::mem::forget(ssl);
-        unsafe { TlsServer::from_raw_ssl(raw_ssl, 1024, is_server) }.unwrap()
+        TlsServer::from_ssl(ssl, 1024, is_server).unwrap()
     }
 
     fn assert_success_amount(response: Response, expected: usize) {

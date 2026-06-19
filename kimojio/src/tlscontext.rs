@@ -12,7 +12,6 @@
 //! TODO: implement client authentication
 //!
 use crate::{Errno, OwnedFd, operations, tlsstream::TlsStream, tracing::Events};
-use foreign_types_shared::ForeignType;
 use kimojio_tls::{TlsServer, TlsServerError};
 use std::time::Instant;
 
@@ -56,19 +55,12 @@ impl TlsContext {
 
     fn create_ssl(&self, bufsize: usize, is_server: bool) -> Result<TlsServer, Errno> {
         let ssl = openssl::ssl::Ssl::new(&self.ssl_ctx).map_err(as_openssl_error)?;
-        let raw_ssl = ssl.as_ptr() as *mut std::ffi::c_void;
-        std::mem::forget(ssl);
-        // SAFETY: `raw_ssl` came from a freshly-created `openssl::ssl::Ssl`.
-        // We forgot the Rust owner, transferring ownership to kimojio_tls.
-        unsafe { TlsServer::from_raw_ssl(raw_ssl, bufsize, is_server) }.map_err(as_io_error)
+        TlsServer::from_ssl(ssl, bufsize, is_server).map_err(as_io_error)
     }
 
     #[cfg(test)]
     fn get_min_proto_version(&self) -> i32 {
-        // SAFETY: `ssl_ctx` is owned by this TlsContext and remains valid for this call.
-        unsafe {
-            kimojio_tls::get_min_proto_version(self.ssl_ctx.as_ptr() as *mut std::ffi::c_void)
-        }
+        kimojio_tls::get_min_proto_version(&self.ssl_ctx)
     }
 }
 

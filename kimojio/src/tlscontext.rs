@@ -91,9 +91,12 @@ pub(crate) fn as_io_error(result: TlsServerError) -> Errno {
             });
             code
         }
-        TlsServerError::TlsError(codes) => {
-            for code in codes {
-                operations::write_event(Events::TlsError { code, activity_id })
+        TlsServerError::TlsError(error_stack) => {
+            for error in error_stack.errors() {
+                operations::write_event(Events::TlsError {
+                    code: error.code(),
+                    activity_id,
+                })
             }
             Errno::from_raw_os_error(crate::EPROTO)
         }

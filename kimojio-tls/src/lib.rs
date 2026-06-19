@@ -56,7 +56,7 @@ pub enum OpensslErrorType {
 #[derive(Debug)]
 pub enum TlsServerError {
     Errno(Errno),
-    TlsError(Vec<u64>),
+    TlsError(ErrorStack),
 }
 
 impl std::error::Error for TlsServerError {}
@@ -65,17 +65,9 @@ impl std::fmt::Display for TlsServerError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             TlsServerError::Errno(errno) => std::fmt::Display::fmt(errno, f),
-            TlsServerError::TlsError(errors) => {
-                for e in errors {
-                    let code = to_openssl_error_code(*e);
-                    let lib = openssl_error_string(unsafe { ffi::ERR_lib_error_string(code) });
-                    let func = openssl_error_string(unsafe { ffi::ERR_func_error_string(code) });
-                    let reason =
-                        openssl_error_string(unsafe { ffi::ERR_reason_error_string(code) });
-
-                    let message = std::fmt::format(format_args!(
-                        "TlsError error:{e} lib:{lib:?} func:{func:?} reason:{reason:?}\n"
-                    ));
+            TlsServerError::TlsError(error_stack) => {
+                for error in error_stack.errors() {
+                    let message = std::fmt::format(format_args!("TlsError {error}\n"));
                     f.write_str(&message)?;
                 }
                 Ok(())
@@ -101,11 +93,6 @@ pub fn get_error_details(code: u64) -> (String, String, Option<String>) {
 #[allow(clippy::unnecessary_cast)]
 fn to_openssl_error_code(code: u64) -> c_ulong {
     code as c_ulong
-}
-
-#[allow(clippy::useless_conversion)]
-fn from_openssl_ulong(code: c_ulong) -> u64 {
-    u64::from(code)
 }
 
 fn openssl_error_string(ptr: *const c_char) -> String {
@@ -152,12 +139,8 @@ pub enum Response {
     WantWrite,
 }
 
-fn get_ssl_error() -> Vec<u64> {
+fn get_ssl_error() -> ErrorStack {
     ErrorStack::get()
-        .errors()
-        .iter()
-        .map(|error| from_openssl_ulong(error.code()))
-        .collect()
 }
 
 fn ssl_stack_error() -> Response {

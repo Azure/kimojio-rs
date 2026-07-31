@@ -18,6 +18,7 @@ async_fn_in_trait = "allow"
 futures.workspace = true
 impls.workspace = true
 intrusive-collections.workspace = true
+kimojio-json.workspace = true
 kimojio-macros.workspace = true
 kimojio-tls = { workspace = true, optional = true }
 libc.workspace = true
@@ -42,6 +43,8 @@ setup_single_issuer = []
 # This requires using 128 byte SQEs and 32 byte CQEs that encapsulate the
 # underlying NVMe SQE and CQEs
 io_uring_cmd = []
+# Expose the parser-only entry point used by the separate fuzz workspace.
+fuzzing = []
 noencrypt = []
 enter_stats = []
 fault_injection = []

@@ -460,6 +460,7 @@ dependencies = [
  "futures",
  "impls",
  "intrusive-collections",
+ "kimojio-json",
  "kimojio-macros",
  "kimojio-tls",
  "libc",

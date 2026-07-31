@@ -15,6 +15,11 @@ cargo-fuzz = true
 arbitrary = { version = "1", features = ["derive"] }
 libfuzzer-sys = "0.4"
 
+[dependencies.kimojio]
+path = "../kimojio"
+default-features = false
+features = ["fuzzing"]
+
 [dependencies.kimojio-json]
 path = "../kimojio-json"
 
@@ -24,6 +29,13 @@ debug = true
 [[bin]]
 name = "json_tokenizer"
 path = "fuzz_targets/json_tokenizer.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "varlink_reply"
+path = "fuzz_targets/varlink_reply.rs"
 test = false
 doc = false
 bench = false

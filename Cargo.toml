@@ -36,6 +36,7 @@ openssl-sys = "0.9"
 pin-project-lite = "0.2"
 roaring = "0.11"
 rustix = { version = "1", features = [
+    "event",
     "io_uring",
     "mount",
     "fs",

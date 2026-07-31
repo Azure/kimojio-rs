@@ -1,0 +1,29 @@
+[package]
+name = "kimojio-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+# Kept out of the parent workspace so the sanitizer and nightly flags the fuzz
+# profile needs never leak into an ordinary build of the runtime.
+[workspace]
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+arbitrary = { version = "1", features = ["derive"] }
+libfuzzer-sys = "0.4"
+
+[dependencies.kimojio-json]
+path = "../kimojio-json"
+
+[profile.release]
+debug = true
+
+[[bin]]
+name = "json_tokenizer"
+path = "fuzz_targets/json_tokenizer.rs"
+test = false
+doc = false
+bench = false

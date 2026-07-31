@@ -475,6 +475,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "kimojio-json"
+version = "0.17.0"
+dependencies = [
+ "criterion",
+]
+
+[[package]]
 name = "kimojio-macros"
 version = "0.17.0"
 dependencies = [

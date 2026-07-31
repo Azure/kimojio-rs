@@ -1,0 +1,23 @@
+[package]
+name = "kimojio-json"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+readme = "README.md"
+description = "A no_std JSON tokenizer that allocates no memory and borrows from the input."
+
+[dependencies]
+
+[dev-dependencies]
+criterion.workspace = true
+
+[[bench]]
+name = "tokenize"
+harness = false
+
+[[bench]]
+name = "count"
+harness = false

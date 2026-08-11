@@ -460,6 +460,7 @@ dependencies = [
  "futures",
  "impls",
  "intrusive-collections",
+ "kimojio-json",
  "kimojio-macros",
  "kimojio-tls",
  "libc",
@@ -472,6 +473,13 @@ dependencies = [
  "tempfile",
  "uuid",
  "zerocopy",
+]
+
+[[package]]
+name = "kimojio-json"
+version = "0.17.0"
+dependencies = [
+ "criterion",
 ]
 
 [[package]]

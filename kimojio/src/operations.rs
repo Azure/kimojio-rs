@@ -1631,7 +1631,10 @@ where
     let tenant_id = task_state.get_current_tenant_id();
 
     let task = task_state.schedule_new(future, activity_id, tenant_id);
-    TaskHandle::new(task)
+    TaskHandle {
+        wait: crate::async_event::WaitFuture::new(TaskSource::new(task)),
+        _marker: Default::default(),
+    }
 }
 
 pin_project_lite::pin_project! {
@@ -1643,13 +1646,6 @@ pin_project_lite::pin_project! {
 }
 
 impl<T: 'static> TaskHandle<T> {
-    pub fn new(task: Rc<Task>) -> Self {
-        TaskHandle {
-            wait: crate::async_event::WaitFuture::new(TaskSource::new(task)),
-            _marker: Default::default(),
-        }
-    }
-
     /// Returns `true` if the task has completed.
     ///
     /// This checks the task state without polling the handle and does not consume

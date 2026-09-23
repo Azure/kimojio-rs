@@ -57,6 +57,12 @@ impl<T> AsyncReaderWriterLock<T> {
     /// that will allow mutable or immutable access as long as it is live.
     pub async fn lock_write(&self) -> Result<WriteRef<'_, T>, CanceledError> {
         self.assert_valid();
+        let _wake_readers_on_cancel = scopeguard::guard((), |_| {
+            // A canceled writer may be the only task woken by WriteRef::drop.
+            if !self.writer.get() {
+                self.read_event.set();
+            }
+        });
         while self.readers.get() > 0 || self.writer.get() {
             self.write_event.wait().await?;
         }

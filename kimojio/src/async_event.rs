@@ -126,6 +126,7 @@ impl AsyncEvent {
     /// # Cancel safety
     ///
     /// This method is cancel safe.
+    /// A canceled waiter passes an available notification to other waiters.
     pub fn wait(&self) -> WaitAsyncEventFuture<'_> {
         WaitAsyncEventFuture {
             wait: WaitFuture::new(AsyncEventSource {
@@ -420,6 +421,17 @@ impl<Source: WaitSource> WaitFuture<Source> {
     pub fn source(&self) -> Option<&Source> {
         self.source.as_ref()
     }
+
+    fn unregister_canceled_wait(&mut self) {
+        if let Some(wait_data) = self.wait_data.take()
+            && let Some(source) = &self.source
+        {
+            source.unregister(&wait_data);
+            if source.is_complete() {
+                source.wake_all();
+            }
+        }
+    }
 }
 
 impl<Source: WaitSource> Future for WaitFuture<Source> {
@@ -430,6 +442,7 @@ impl<Source: WaitSource> Future for WaitFuture<Source> {
             && wait_data.canceled.get()
         {
             wait_data.canceled.set(false);
+            self.get_mut().unregister_canceled_wait();
             return Poll::Ready(Err(CanceledError {}));
         }
 
@@ -496,11 +509,7 @@ impl<Source: WaitSource> FusedFuture for WaitFuture<Source> {
 
 impl<Source: WaitSource> Drop for WaitFuture<Source> {
     fn drop(&mut self) {
-        if let Some(wait_data) = &self.wait_data
-            && let Some(source) = &self.source
-        {
-            source.unregister(wait_data);
-        }
+        self.unregister_canceled_wait();
     }
 }
 
@@ -517,6 +526,109 @@ mod test {
     use futures::Future;
 
     use crate::{AsyncEvent, operations, run_test};
+
+    #[derive(Default)]
+    struct WakeCount(std::sync::atomic::AtomicUsize);
+
+    impl std::task::Wake for WakeCount {
+        fn wake(self: std::sync::Arc<Self>) {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    fn poll_counted<F: Future>(
+        future: Pin<&mut F>,
+        count: &std::sync::Arc<WakeCount>,
+    ) -> Poll<F::Output> {
+        let waker = std::task::Waker::from(count.clone());
+        future.poll(&mut Context::from_waker(&waker))
+    }
+
+    fn assert_cancel_handoff(first: impl Future, second: impl Future, release: impl FnOnce()) {
+        let first_wakes = std::sync::Arc::new(WakeCount::default());
+        let second_wakes = std::sync::Arc::new(WakeCount::default());
+        let mut first = Box::pin(first);
+        let mut second = Box::pin(second);
+        assert!(poll_counted(first.as_mut(), &first_wakes).is_pending());
+        assert!(poll_counted(second.as_mut(), &second_wakes).is_pending());
+        release();
+        assert_eq!(first_wakes.0.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(second_wakes.0.load(std::sync::atomic::Ordering::SeqCst), 0);
+        drop(first);
+        assert_eq!(second_wakes.0.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(poll_counted(second.as_mut(), &second_wakes).is_ready());
+    }
+
+    #[crate::test]
+    async fn canceled_mutex_waiter_passes_wakeup() {
+        let lock = crate::AsyncLock::new(());
+        let guard = lock.lock().await.unwrap();
+        assert_cancel_handoff(lock.lock(), lock.lock(), || drop(guard));
+        let guard = lock.lock().await.unwrap();
+        assert_cancel_handoff(
+            lock.lock_with_deadline(None),
+            lock.lock_with_deadline(None),
+            || drop(guard),
+        );
+    }
+
+    #[crate::test]
+    async fn canceled_semaphore_waiter_passes_wakeup() {
+        let semaphore = crate::AsyncSemaphore::new(0);
+        assert_cancel_handoff(semaphore.acquire(), semaphore.acquire(), || {
+            semaphore.release()
+        });
+    }
+
+    #[crate::test]
+    async fn canceled_writer_passes_wakeup() {
+        let lock = crate::AsyncReaderWriterLock::new(());
+        let guard = lock.lock_write().await.unwrap();
+        assert_cancel_handoff(lock.lock_write(), lock.lock_write(), || drop(guard));
+    }
+
+    #[crate::test]
+    async fn canceled_writer_wakes_readers() {
+        let lock = crate::AsyncReaderWriterLock::new(());
+        let guard = lock.lock_write().await.unwrap();
+        assert_cancel_handoff(lock.lock_write(), lock.lock_read(), || drop(guard));
+    }
+
+    #[crate::test]
+    async fn cancellation_error_passes_wakeup_before_future_drop() {
+        let event = AsyncEvent::new();
+        let first_wakes = std::sync::Arc::new(WakeCount::default());
+        let second_wakes = std::sync::Arc::new(WakeCount::default());
+        let mut first = Box::pin(event.wait());
+        operations::io_scope(async || {
+            assert!(poll_counted(first.as_mut(), &first_wakes).is_pending());
+            operations::io_scope_cancel();
+        })
+        .await;
+        let mut second = Box::pin(event.wait());
+        assert!(poll_counted(second.as_mut(), &second_wakes).is_pending());
+        event.set_wake_one();
+        assert_eq!(second_wakes.0.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert!(matches!(
+            poll_counted(first.as_mut(), &first_wakes),
+            Poll::Ready(Err(crate::CanceledError {}))
+        ));
+        assert_eq!(second_wakes.0.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(poll_counted(second.as_mut(), &second_wakes).is_ready());
+    }
+
+    #[crate::test]
+    async fn canceled_waiter_does_not_signal_an_unavailable_event() {
+        let event = AsyncEvent::new();
+        let wakes = std::sync::Arc::new(WakeCount::default());
+        let mut first = Box::pin(event.wait());
+        let mut second = Box::pin(event.wait());
+        assert!(poll_counted(first.as_mut(), &wakes).is_pending());
+        assert!(poll_counted(second.as_mut(), &wakes).is_pending());
+        drop(first);
+        assert_eq!(wakes.0.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert!(poll_counted(second.as_mut(), &wakes).is_pending());
+    }
 
     #[test]
     fn event_test_set_reset() {

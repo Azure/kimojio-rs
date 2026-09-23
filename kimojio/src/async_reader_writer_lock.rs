@@ -143,11 +143,15 @@ impl<'a, T> ReadRef<'a, T> {
     /// Upgrades this read lock to a write lock, waiting if necessary.
     ///
     /// The read lock is released before acquiring the write lock.
+    ///
+    /// # Cancel safety
+    ///
+    /// If the future is dropped before completion or returns an error, it
+    /// releases this read lock without acquiring a write lock.
     pub async fn upgrade(self) -> Result<WriteRef<'a, T>, CanceledError> {
-        self.parent.readers.set(self.parent.readers.get() - 1);
-        let result = self.parent.lock_write().await?;
-        std::mem::forget(self);
-        Ok(result)
+        let parent = self.parent;
+        drop(self);
+        parent.lock_write().await
     }
 }
 
@@ -277,6 +281,83 @@ mod test {
         drop(write);
 
         assert_eq!(*lock.lock_read().await.unwrap(), 5);
+    }
+
+    #[crate::test]
+    async fn drop_unpolled_upgrade() {
+        let lock = AsyncReaderWriterLock::new(0);
+        let reader = lock.lock_read().await.unwrap();
+
+        drop(reader.upgrade());
+
+        assert_eq!(lock.readers.get(), 0);
+        assert!(lock.write_event.is_set());
+        assert!(lock.lock_write().await.is_ok());
+    }
+
+    #[crate::test]
+    async fn drop_pending_upgrade_preserves_other_reader() {
+        let lock = AsyncReaderWriterLock::new(0);
+        let reader = lock.lock_read().await.unwrap();
+        let upgrading = lock.lock_read().await.unwrap();
+        {
+            let mut upgrade = std::pin::pin!(upgrading.upgrade());
+            assert!(futures::poll!(upgrade.as_mut()).is_pending());
+            assert_eq!(lock.readers.get(), 1);
+        }
+
+        assert_eq!(lock.readers.get(), 1);
+        assert!(!lock.write_event.any_waiting());
+        assert!(!lock.write_event.is_set());
+        let mut writer = std::pin::pin!(lock.lock_write());
+        assert!(futures::poll!(writer.as_mut()).is_pending());
+        assert_eq!(*reader, 0);
+
+        drop(reader);
+        let mut writer = writer.await.unwrap();
+        *writer = 5;
+        drop(writer);
+        assert_eq!(*lock.lock_read().await.unwrap(), 5);
+    }
+
+    #[crate::test]
+    async fn drop_pending_upgrade_after_last_reader() {
+        let lock = AsyncReaderWriterLock::new(0);
+        let reader = lock.lock_read().await.unwrap();
+        let upgrading = lock.lock_read().await.unwrap();
+        {
+            let mut upgrade = std::pin::pin!(upgrading.upgrade());
+            assert!(futures::poll!(upgrade.as_mut()).is_pending());
+            drop(reader);
+            assert_eq!(lock.readers.get(), 0);
+        }
+
+        assert_eq!(lock.readers.get(), 0);
+        assert!(lock.lock_write().await.is_ok());
+    }
+
+    #[crate::test]
+    async fn canceled_upgrade_preserves_other_reader() {
+        let lock = AsyncReaderWriterLock::new(0);
+        let reader = lock.lock_read().await.unwrap();
+        let upgrading = lock.lock_read().await.unwrap();
+        operations::io_scope(async || {
+            let mut upgrade = std::pin::pin!(upgrading.upgrade());
+            assert!(futures::poll!(upgrade.as_mut()).is_pending());
+            operations::io_scope_cancel();
+            assert!(matches!(upgrade.await, Err(crate::CanceledError {})));
+        })
+        .await;
+
+        assert_eq!(lock.readers.get(), 1);
+        assert!(!lock.write_event.any_waiting());
+        assert!(!lock.write_event.is_set());
+        let mut writer = std::pin::pin!(lock.lock_write());
+        assert!(futures::poll!(writer.as_mut()).is_pending());
+        assert_eq!(*reader, 0);
+
+        drop(reader);
+        assert!(writer.await.is_ok());
     }
 
     #[crate::test]

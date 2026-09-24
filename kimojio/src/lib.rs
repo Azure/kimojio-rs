@@ -140,6 +140,7 @@ pub(crate) struct Completion {
 #[allow(dead_code)]
 enum CompletionResources {
     None,
+    CloseFd(std::cell::Cell<Option<OwnedFd>>),
     Timespec(rustix_uring::types::Timespec),
     Box(Box<dyn std::any::Any>),
     Rc(Rc<dyn std::any::Any>),
@@ -147,6 +148,21 @@ enum CompletionResources {
 }
 
 impl Completion {
+    fn finish_close(&self, result: Result<u32, Errno>) {
+        if let CompletionResources::CloseFd(fd) = &self.owned_resources
+            && let Some(fd) = fd.take()
+        {
+            if result == Err(Errno::CANCELED) {
+                drop(fd);
+            } else {
+                // Linux releases the descriptor even when close reports an
+                // error. Never close its number again: another thread can reuse it.
+                use std::os::fd::IntoRawFd;
+                let _ = fd.into_raw_fd();
+            }
+        }
+    }
+
     pub fn cancel(self: &Rc<Self>, task_state: &mut task::TaskState) {
         let should_cancel = self.state.use_mut(|state| match state {
             CompletionState::Idle { .. } => {

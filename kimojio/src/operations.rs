@@ -67,7 +67,7 @@ use rustix_uring::{
     opcode,
     types::{Fd, Timespec},
 };
-use std::{ffi::CStr, mem::ManuallyDrop, net::SocketAddrV4, time::Duration};
+use std::{ffi::CStr, net::SocketAddrV4, time::Duration};
 
 #[cfg(feature = "io_uring_cmd")]
 use crate::ring_future::UringCmdFuture;
@@ -1045,11 +1045,19 @@ pub fn pread<'a>(fd: &impl AsFd, buf: &'a mut [u8], offset: u64) -> UsizeFuture<
 /// is consumed and cannot be used after this operation.
 ///
 /// Returns a future that resolves to `()` on success, or an error.
+///
+/// Dropping the future closes the descriptor even if the I/O was not submitted
+/// or cancellation prevented the kernel from closing it.
 pub fn close(fd: OwnedFd) -> UnitFuture<'static> {
-    // we are consuming the fd ourselves, so suppress the Drop trait
-    let fd = ManuallyDrop::new(fd);
-    let fd = fd.as_fd().as_raw_fd();
-    UnitFuture::new(opcode::Close::new(Fd(fd)).build(), fd, None, IOType::Close)
+    let raw_fd = fd.as_raw_fd();
+    UnitFuture::with_polled(
+        opcode::Close::new(Fd(raw_fd)).build(),
+        raw_fd,
+        None,
+        IOType::Close,
+        false,
+        CompletionResources::CloseFd(std::cell::Cell::new(Some(fd))),
+    )
 }
 
 /// Performs a no-operation.

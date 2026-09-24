@@ -249,6 +249,7 @@ impl<'a, T: Unpin, C: MakeResult<T>> Future for RingFuture<'a, T, C> {
                 big_cqe,
             } => {
                 let result = *result;
+                completion.finish_close(result);
 
                 #[cfg(not(feature = "io_uring_cmd"))]
                 let big_cqe = &[0u64; 2];
@@ -293,9 +294,8 @@ impl<'a, T: Unpin, C: MakeResult<T>> Drop for RingFuture<'a, T, C> {
             let mut task_state = TaskState::get();
             completion.cancel(&mut task_state);
 
-            // If we had owned resources registered with the completion, then we can return
-            // right away. The resources are guaranteed to live as long as the Rc<Completion>
-            // which is always at least as long as until the I/O completes.
+            // Owned buffers can outlive the future through Rc<Completion>.
+            // Descriptor ownership still requires the actual completion result.
 
             // However, if CompletionResources is None, then this request might have borrowed
             // resources, and we need to block until the I/O is complete.  Otherwise the kernel
@@ -305,7 +305,7 @@ impl<'a, T: Unpin, C: MakeResult<T>> Drop for RingFuture<'a, T, C> {
 
             // TODO: when AsyncDrop lands in stable, we should see if we can make use of that to
             // improve this code to allow other tasks to continue while waiting for the cancelation.
-            fn pending_io_with_borrowed_resources(
+            fn pending_io_with_borrowed_resources<T>(
                 state: &MutInPlaceCell<CompletionState>,
                 owned_resources: &CompletionResources,
             ) -> bool {
@@ -314,9 +314,9 @@ impl<'a, T: Unpin, C: MakeResult<T>> Drop for RingFuture<'a, T, C> {
                         // The I/O has been submitted to the kernel but is not yet complete, not safe
                         // unless we own the resources and thus control their lifetime
                         CompletionState::Submitted { .. } => {
-                            matches!(
+                            std::mem::needs_drop::<T>() || matches!(
                                 owned_resources,
-                                CompletionResources::None
+                                CompletionResources::None | CompletionResources::CloseFd(_)
                             )
                         },
                         // in Idle, we didn't submit the I/O yet so we are safe
@@ -328,7 +328,10 @@ impl<'a, T: Unpin, C: MakeResult<T>> Drop for RingFuture<'a, T, C> {
                 })
             }
 
-            if pending_io_with_borrowed_resources(&completion.state, &completion.owned_resources) {
+            if pending_io_with_borrowed_resources::<T>(
+                &completion.state,
+                &completion.owned_resources,
+            ) {
                 let current_task = task_state.current_task.as_ref().unwrap();
                 let task_id = current_task.task_index;
                 task_state.write_event(
@@ -338,7 +341,7 @@ impl<'a, T: Unpin, C: MakeResult<T>> Drop for RingFuture<'a, T, C> {
                     },
                 );
 
-                while pending_io_with_borrowed_resources(
+                while pending_io_with_borrowed_resources::<T>(
                     &completion.state,
                     &completion.owned_resources,
                 ) {
@@ -346,6 +349,26 @@ impl<'a, T: Unpin, C: MakeResult<T>> Drop for RingFuture<'a, T, C> {
                     task_state = submit_and_complete_io(task_state, false, iopoll);
                 }
             }
+
+            let abandoned = completion.state.use_mut(|state| {
+                if let CompletionState::Completed {
+                    result,
+                    #[cfg(feature = "io_uring_cmd")]
+                    big_cqe,
+                } = state
+                {
+                    completion.finish_close(*result);
+                    #[cfg(not(feature = "io_uring_cmd"))]
+                    let big_cqe = &[0; 2];
+                    let result = result.map(|value| C::make_success(value, big_cqe));
+                    *state = CompletionState::Terminated;
+                    Some(result)
+                } else {
+                    None
+                }
+            });
+            drop(task_state);
+            drop(abandoned);
         }
     }
 }
@@ -401,6 +424,151 @@ impl MakeResult<[u64; 2]> for ResultToCqe {
 mod test {
     use crate::{AsyncEvent, Errno, OwnedFd, operations};
     use std::rc::Rc;
+
+    async fn completion_result<T: Unpin, C: super::MakeResult<T>>(
+        future: &super::RingFuture<'_, T, C>,
+    ) -> Result<u32, crate::Errno> {
+        for _ in 0..1000 {
+            operations::nop().await.unwrap();
+            if let Some(result) = future.handle.as_ref().unwrap().state.use_mut(|state| {
+                if let crate::CompletionState::Completed { result, .. } = state {
+                    Some(*result)
+                } else {
+                    None
+                }
+            }) {
+                return result;
+            }
+        }
+        panic!("I/O did not complete");
+    }
+
+    #[crate::test]
+    async fn unpolled_close_releases_descriptor() {
+        let (fd, peer) = crate::pipe::bipipe();
+        drop(operations::close(fd));
+        assert_eq!(
+            rustix::net::recv(&peer, &mut [0; 1], rustix::net::RecvFlags::DONTWAIT),
+            Ok((0, 0))
+        );
+    }
+
+    #[crate::test]
+    async fn canceled_close_releases_descriptor() {
+        let (fd, peer) = crate::pipe::bipipe();
+        let close = operations::close(fd);
+        close.cancel();
+        assert_eq!(close.await, Err(Errno::CANCELED));
+        assert_eq!(
+            rustix::net::recv(&peer, &mut [0; 1], rustix::net::RecvFlags::DONTWAIT),
+            Ok((0, 0))
+        );
+
+        let (fd, peer) = crate::pipe::bipipe();
+        {
+            let mut close = std::pin::pin!(operations::close(fd));
+            assert!(futures::poll!(close.as_mut()).is_pending());
+        }
+        assert_eq!(
+            rustix::net::recv(&peer, &mut [0; 1], rustix::net::RecvFlags::DONTWAIT),
+            Ok((0, 0))
+        );
+    }
+
+    #[crate::test]
+    async fn completed_close_does_not_close_reused_number() {
+        use std::os::fd::AsRawFd;
+        let (fd, peer) = crate::pipe::bipipe();
+        // Avoid ordinary descriptor allocations without exceeding the soft limit.
+        let min_fd = rustix::process::getrlimit(rustix::process::Resource::Nofile)
+            .current
+            .map_or(10000, |limit| {
+                i32::try_from((limit / 2).min(10000)).unwrap()
+            });
+        let fd = rustix::io::fcntl_dupfd_cloexec(&fd, min_fd).unwrap();
+        let raw = fd.as_raw_fd();
+        let mut close = Box::pin(operations::close(fd));
+        assert!(futures::poll!(close.as_mut()).is_pending());
+        assert_eq!(completion_result(&close).await, Ok(0));
+        let replacement = rustix::io::fcntl_dupfd_cloexec(&peer, raw).unwrap();
+        assert_eq!(replacement.as_raw_fd(), raw);
+        drop(close);
+        assert!(rustix::io::fcntl_getfd(&replacement).is_ok());
+    }
+
+    #[crate::test]
+    async fn dropped_open_reclaims_unconsumed_result() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let path = std::ffi::CString::new(file.path().as_os_str().as_encoded_bytes()).unwrap();
+        operations::io_scope(async || {
+            let mut open = Box::pin(operations::open(
+                &path,
+                rustix::fs::OFlags::RDONLY,
+                rustix::fs::Mode::empty(),
+            ));
+            assert!(futures::poll!(open.as_mut()).is_pending());
+            let raw = completion_result(&open).await.unwrap();
+            let link = format!("/proc/self/fd/{raw}");
+            assert_eq!(std::fs::read_link(&link).unwrap(), file.path());
+            drop(open);
+            assert_ne!(std::fs::read_link(&link).ok().as_deref(), Some(file.path()));
+        })
+        .await;
+    }
+
+    #[crate::test]
+    async fn dropped_accept_reclaims_unconsumed_result() {
+        use std::io::Read;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut peer = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        peer.set_read_timeout(Some(std::time::Duration::from_secs(1)))
+            .unwrap();
+        let mut accept = Box::pin(operations::accept(&listener));
+        assert!(futures::poll!(accept.as_mut()).is_pending());
+        completion_result(&accept).await.unwrap();
+        drop(accept);
+        assert_eq!(peer.read(&mut [0; 1]).unwrap(), 0);
+    }
+
+    #[crate::test]
+    async fn dropped_descriptor_future_drains_owned_resources() {
+        let path = Box::new(std::ffi::CString::new("/dev/null").unwrap());
+        let entry = rustix_uring::opcode::OpenAt::new(
+            rustix_uring::types::Fd(libc::AT_FDCWD),
+            path.as_ptr(),
+        )
+        .flags(rustix::fs::OFlags::RDONLY)
+        .build();
+        let mut open = Box::pin(super::OwnedFdFuture::with_polled(
+            entry,
+            -1,
+            None,
+            crate::io_type::IOType::Open,
+            false,
+            crate::CompletionResources::Box(path),
+        ));
+        let completion = open.handle.as_ref().unwrap().clone();
+        assert!(futures::poll!(open.as_mut()).is_pending());
+        drop(open);
+        assert!(
+            completion
+                .state
+                .use_mut(|state| matches!(state, crate::CompletionState::Terminated))
+        );
+    }
+
+    #[crate::test]
+    async fn consumed_descriptor_result_remains_owned_by_caller() {
+        let fd = operations::open(
+            c"/dev/null",
+            rustix::fs::OFlags::RDONLY,
+            rustix::fs::Mode::empty(),
+        )
+        .await
+        .unwrap();
+        assert!(rustix::io::fcntl_getfd(&fd).is_ok());
+        operations::close(fd).await.unwrap();
+    }
 
     #[crate::test]
     async fn select_test() {

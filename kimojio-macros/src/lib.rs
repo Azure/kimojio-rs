@@ -42,6 +42,7 @@ pub fn main(_attr: TokenStream, item: TokenStream) -> TokenStream {
         vis,
         sig,
         block,
+        ..
     } = input;
 
     let fn_name = &sig.ident;
@@ -133,6 +134,7 @@ pub fn test(attr: TokenStream, item: TokenStream) -> TokenStream {
         vis,
         sig,
         block,
+        ..
     } = input;
 
     let fn_name = &sig.ident;

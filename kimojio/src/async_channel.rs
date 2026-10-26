@@ -2,12 +2,17 @@
 // Licensed under the MIT License.
 use std::{cell::Cell, collections::VecDeque, rc::Rc, time::Instant};
 
-use crate::{AsyncEvent, ChannelError, MutInPlaceCell};
+use uuid::Uuid;
+
+use crate::{
+    AsyncEvent, ChannelError, MutInPlaceCell,
+    async_event::{WaitData, WaitFuture, WaitList, WaitSource},
+};
 
 /// Creates a new unbounded channel. The channel can be used to send messages
-/// between tasks. Sending never blocks. The channel is closed when the sender
-/// is dropped or can be closed explicitly by the sender. Closing a channel
-/// drops any messages that are in the channel.
+/// between tasks. Sending never blocks. The channel closes when its receiver
+/// or all senders are dropped. A sender can also close the channel explicitly.
+/// The receiver can still receive queued messages after the channel closes.
 pub fn async_channel_unbounded<T>() -> (SenderUnbounded<T>, ReceiverUnbounded<T>) {
     let inner = Rc::new(AsyncChannelUnbounded::new());
     (
@@ -20,8 +25,9 @@ pub fn async_channel_unbounded<T>() -> (SenderUnbounded<T>, ReceiverUnbounded<T>
 
 /// Creates a new unbounded channel with a specified capacity. The channel can
 /// be used to send messages between tasks. Sending never blocks. The channel is
-/// closed when the sender is dropped or can be closed explicitly by the sender.
-/// Closing a channel drops any messages that are in the channel.
+/// closed when its receiver or all senders are dropped. A sender can also close
+/// the channel explicitly. The receiver can still receive queued messages after
+/// the channel closes.
 pub fn async_channel_unbounded_with_capacity<T>(
     capacity: usize,
 ) -> (SenderUnbounded<T>, ReceiverUnbounded<T>) {
@@ -34,9 +40,9 @@ pub fn async_channel_unbounded_with_capacity<T>(
     )
 }
 
-/// A sender that can be used to send messages to an unbounded channel. If the
-/// sender is dropped, the channel will be closed and any messages that are in
-/// the channel will be dropped.
+/// A sender that can be used to send messages to an unbounded channel.
+/// When all senders are dropped, the channel closes. The receiver can still
+/// receive queued messages.
 pub struct SenderUnbounded<T> {
     inner: Rc<AsyncChannelUnbounded<T>>,
 }
@@ -80,6 +86,7 @@ impl<T> Drop for SenderUnbounded<T> {
 }
 
 /// A receiver that can be used to receive messages from an unbounded channel.
+/// Dropping the receiver closes the channel and prevents further sends.
 pub struct ReceiverUnbounded<T> {
     inner: Rc<AsyncChannelUnbounded<T>>,
 }
@@ -101,6 +108,16 @@ impl<T> ReceiverUnbounded<T> {
     /// the channel is closed, or the deadline is reached.
     pub async fn recv_with_deadline(&self, deadline: Option<Instant>) -> Result<T, ChannelError> {
         self.inner.recv(deadline).await
+    }
+}
+
+// ReceiverUnbounded must not be Clone unless the Drop implementation is updated
+// to support that.
+static_assertions::const_assert!(impls::impls!(ReceiverUnbounded<()>: !Clone));
+
+impl<T> Drop for ReceiverUnbounded<T> {
+    fn drop(&mut self) {
+        self.inner.close();
     }
 }
 
@@ -294,7 +311,7 @@ struct AsyncChannelValue<T> {
 
 struct AsyncChannel<T> {
     item: MutInPlaceCell<AsyncChannelValue<T>>,
-    has_item: AsyncEvent,
+    waiters: WaitList,
     sender_count: Cell<usize>,
 }
 
@@ -307,6 +324,58 @@ pub enum SendError<T> {
     ChannelFull(T),
 }
 
+struct ChannelSendSource<'a, T> {
+    channel: &'a AsyncChannel<T>,
+}
+
+impl<T> WaitSource for ChannelSendSource<'_, T> {
+    fn is_complete(&self) -> bool {
+        self.channel
+            .item
+            .use_mut(|item| item.closed || item.value.is_none())
+    }
+
+    fn wake_all(&self) {
+        self.channel.waiters.wake_all();
+    }
+
+    fn register(&self, wait_data: &Rc<WaitData>, task_id: u16, activity_id: Uuid, tag: u32) {
+        self.channel
+            .waiters
+            .register(wait_data, task_id, activity_id, tag);
+    }
+
+    fn unregister(&self, wait_data: &Rc<WaitData>) {
+        self.channel.waiters.unregister(wait_data);
+    }
+}
+
+struct ChannelRecvSource<'a, T> {
+    channel: &'a AsyncChannel<T>,
+}
+
+impl<T> WaitSource for ChannelRecvSource<'_, T> {
+    fn is_complete(&self) -> bool {
+        self.channel
+            .item
+            .use_mut(|item| item.closed || item.value.is_some())
+    }
+
+    fn wake_all(&self) {
+        self.channel.waiters.wake_all();
+    }
+
+    fn register(&self, wait_data: &Rc<WaitData>, task_id: u16, activity_id: Uuid, tag: u32) {
+        self.channel
+            .waiters
+            .register(wait_data, task_id, activity_id, tag);
+    }
+
+    fn unregister(&self, wait_data: &Rc<WaitData>) {
+        self.channel.waiters.unregister(wait_data);
+    }
+}
+
 impl<T> AsyncChannel<T> {
     fn new() -> Self {
         Self {
@@ -314,7 +383,7 @@ impl<T> AsyncChannel<T> {
                 value: None,
                 closed: false,
             }),
-            has_item: AsyncEvent::new(),
+            waiters: WaitList::new(),
             sender_count: Cell::new(1),
         }
     }
@@ -325,7 +394,9 @@ impl<T> AsyncChannel<T> {
                 Ok(()) => return Ok(()),
                 Err(SendError::ChannelFull(m)) => {
                     message = m;
-                    if let Err(_canceled_error) = self.has_item.wait_reset().await {
+                    if let Err(_canceled_error) =
+                        WaitFuture::new(ChannelSendSource { channel: self }).await
+                    {
                         return Err(message);
                     }
                 }
@@ -347,21 +418,24 @@ impl<T> AsyncChannel<T> {
                 Err(SendError::ChannelClosed(message))
             }
         })?;
-        self.has_item.set();
+        self.waiters.wake_all();
         Ok(())
     }
 
     fn try_recv(&self) -> Result<Option<T>, ChannelError> {
-        self.item.use_mut(|item| {
+        let value = self.item.use_mut(|item| {
             if let Some(value) = item.value.take() {
-                self.has_item.reset();
                 Ok(Some(value))
             } else if !item.closed {
                 Ok(None)
             } else {
                 Err(ChannelError::Closed)
             }
-        })
+        })?;
+        if value.is_some() {
+            self.waiters.wake_all();
+        }
+        Ok(value)
     }
 
     async fn recv(&self) -> Result<T, ChannelError> {
@@ -370,13 +444,13 @@ impl<T> AsyncChannel<T> {
                 return Ok(value);
             }
 
-            self.has_item.wait().await?;
+            WaitFuture::new(ChannelRecvSource { channel: self }).await?;
         }
     }
 
     fn close(&self) {
         self.item.use_mut(|item| item.closed = true);
-        self.has_item.set();
+        self.waiters.wake_all();
     }
 
     fn increment_sender_count(&self) {
@@ -402,13 +476,36 @@ impl<T> Default for AsyncChannel<T> {
 
 #[cfg(test)]
 mod test {
-    use std::{future::Future, rc::Rc};
+    use std::{
+        future::Future,
+        pin::{Pin, pin},
+        rc::Rc,
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
+        task::{Context, Poll, Wake, Waker},
+    };
 
     use super::{
         AsyncChannel, ChannelError, SendError, async_channel, async_channel_unbounded,
         async_channel_unbounded_with_capacity,
     };
     use crate::operations;
+
+    #[derive(Default)]
+    struct WakeCount(AtomicUsize);
+
+    impl Wake for WakeCount {
+        fn wake(self: Arc<Self>) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    fn poll_counted<F: Future>(future: Pin<&mut F>, count: &Arc<WakeCount>) -> Poll<F::Output> {
+        let waker = Waker::from(count.clone());
+        future.poll(&mut Context::from_waker(&waker))
+    }
 
     #[derive(Default)]
     struct AsyncBiChannel<T> {
@@ -560,6 +657,204 @@ mod test {
         let (channel1_tx, channel1_rx) = async_channel();
         drop(channel1_rx);
         assert_eq!(Err(SendError::ChannelClosed(3)), channel1_tx.try_send(3));
+    }
+
+    #[crate::test]
+    async fn test_blocked_send_when_receiver_dropped() {
+        let (tx, rx) = async_channel();
+        let tx_clone = tx.clone();
+        tx.try_send(1).unwrap();
+
+        let send_wakes = Arc::new(WakeCount::default());
+        let cloned_send_wakes = Arc::new(WakeCount::default());
+        let mut send = pin!(tx.send(2));
+        let mut cloned_send = pin!(tx_clone.send(3));
+        assert_eq!(Poll::Pending, poll_counted(send.as_mut(), &send_wakes));
+        assert_eq!(
+            Poll::Pending,
+            poll_counted(cloned_send.as_mut(), &cloned_send_wakes)
+        );
+
+        drop(rx);
+
+        assert_eq!(send_wakes.0.load(Ordering::SeqCst), 1);
+        assert_eq!(cloned_send_wakes.0.load(Ordering::SeqCst), 1);
+        assert_eq!(Err(SendError::ChannelClosed(4)), tx.try_send(4));
+        assert_eq!(
+            Poll::Ready(Err(2)),
+            poll_counted(send.as_mut(), &send_wakes)
+        );
+        assert_eq!(
+            Poll::Ready(Err(3)),
+            poll_counted(cloned_send.as_mut(), &cloned_send_wakes)
+        );
+    }
+
+    #[crate::test]
+    async fn test_blocked_send_resumes_after_receive() {
+        let (tx, rx) = async_channel();
+        tx.try_send(1).unwrap();
+
+        let mut send = pin!(tx.send(2));
+        assert_eq!(Poll::Pending, futures::poll!(send.as_mut()));
+        assert_eq!(Ok(Some(1)), rx.try_recv());
+        tx.try_send(3).unwrap();
+        assert_eq!(Poll::Pending, futures::poll!(send.as_mut()));
+
+        assert_eq!(Ok(Some(3)), rx.try_recv());
+        assert_eq!(Poll::Ready(Ok(())), futures::poll!(send.as_mut()));
+        assert_eq!(Ok(Some(2)), rx.try_recv());
+        assert_eq!(Ok(None), rx.try_recv());
+    }
+
+    #[crate::test]
+    async fn test_blocked_recv_when_last_sender_dropped() {
+        let (tx, rx) = async_channel::<i32>();
+        let tx_clone = tx.clone();
+        let recv_wakes = Arc::new(WakeCount::default());
+        let mut recv = pin!(rx.recv());
+        assert_eq!(Poll::Pending, poll_counted(recv.as_mut(), &recv_wakes));
+
+        drop(tx);
+        assert_eq!(recv_wakes.0.load(Ordering::SeqCst), 0);
+        assert_eq!(Poll::Pending, poll_counted(recv.as_mut(), &recv_wakes));
+        drop(tx_clone);
+
+        assert_eq!(recv_wakes.0.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            Poll::Ready(Err(ChannelError::Closed)),
+            poll_counted(recv.as_mut(), &recv_wakes)
+        );
+    }
+
+    #[crate::test]
+    async fn test_blocked_recv_resumes_after_send() {
+        let (tx, rx) = async_channel();
+        let recv_wakes = Arc::new(WakeCount::default());
+        let mut recv = pin!(rx.recv());
+        assert_eq!(Poll::Pending, poll_counted(recv.as_mut(), &recv_wakes));
+
+        tx.try_send(1).unwrap();
+
+        assert_eq!(recv_wakes.0.load(Ordering::SeqCst), 1);
+        assert_eq!(Poll::Ready(Ok(1)), poll_counted(recv.as_mut(), &recv_wakes));
+        assert_eq!(Ok(None), rx.try_recv());
+    }
+
+    #[crate::test]
+    async fn test_dropped_blocked_send_unregisters_waiter() {
+        let (tx, rx) = async_channel();
+        tx.try_send(1).unwrap();
+
+        let canceled_wakes = Arc::new(WakeCount::default());
+        let send_wakes = Arc::new(WakeCount::default());
+        let mut canceled = Box::pin(tx.send(2));
+        let mut send = pin!(tx.send(3));
+        assert_eq!(
+            Poll::Pending,
+            poll_counted(canceled.as_mut(), &canceled_wakes)
+        );
+        assert_eq!(Poll::Pending, poll_counted(send.as_mut(), &send_wakes));
+        drop(canceled);
+
+        assert_eq!(Ok(Some(1)), rx.try_recv());
+
+        assert_eq!(canceled_wakes.0.load(Ordering::SeqCst), 0);
+        assert_eq!(send_wakes.0.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            Poll::Ready(Ok(())),
+            poll_counted(send.as_mut(), &send_wakes)
+        );
+        assert_eq!(Ok(Some(3)), rx.try_recv());
+        assert_eq!(Ok(None), rx.try_recv());
+    }
+
+    #[crate::test]
+    async fn test_dropped_blocked_recv_unregisters_waiter() {
+        let (tx, rx) = async_channel();
+        let canceled_wakes = Arc::new(WakeCount::default());
+        let recv_wakes = Arc::new(WakeCount::default());
+        let mut canceled = Box::pin(rx.recv());
+        let mut recv = pin!(rx.recv());
+        assert_eq!(
+            Poll::Pending,
+            poll_counted(canceled.as_mut(), &canceled_wakes)
+        );
+        assert_eq!(Poll::Pending, poll_counted(recv.as_mut(), &recv_wakes));
+        drop(canceled);
+
+        tx.try_send(1).unwrap();
+
+        assert_eq!(canceled_wakes.0.load(Ordering::SeqCst), 0);
+        assert_eq!(recv_wakes.0.load(Ordering::SeqCst), 1);
+        assert_eq!(Poll::Ready(Ok(1)), poll_counted(recv.as_mut(), &recv_wakes));
+        assert_eq!(Ok(None), rx.try_recv());
+    }
+
+    #[crate::test]
+    async fn test_canceled_ready_send_does_not_complete_waiting_recv() {
+        let (tx, rx) = async_channel();
+        tx.try_send(1).unwrap();
+        let mut send = Box::pin(tx.send(2));
+        assert_eq!(Poll::Pending, futures::poll!(send.as_mut()));
+        assert_eq!(Ok(Some(1)), rx.try_recv());
+
+        let recv_wakes = Arc::new(WakeCount::default());
+        let mut recv = pin!(rx.recv());
+        assert_eq!(Poll::Pending, poll_counted(recv.as_mut(), &recv_wakes));
+        drop(send);
+        assert_eq!(Poll::Pending, poll_counted(recv.as_mut(), &recv_wakes));
+
+        let wakes = recv_wakes.0.load(Ordering::SeqCst);
+        tx.try_send(3).unwrap();
+        assert_eq!(recv_wakes.0.load(Ordering::SeqCst), wakes + 1);
+        assert_eq!(Poll::Ready(Ok(3)), poll_counted(recv.as_mut(), &recv_wakes));
+        assert_eq!(Ok(None), rx.try_recv());
+    }
+
+    #[crate::test]
+    async fn test_canceled_ready_recv_does_not_complete_waiting_send() {
+        let (tx, rx) = async_channel();
+        let mut recv = Box::pin(rx.recv());
+        assert_eq!(Poll::Pending, futures::poll!(recv.as_mut()));
+        tx.try_send(1).unwrap();
+
+        let send_wakes = Arc::new(WakeCount::default());
+        let mut send = pin!(tx.send(2));
+        assert_eq!(Poll::Pending, poll_counted(send.as_mut(), &send_wakes));
+        drop(recv);
+        assert_eq!(Poll::Pending, poll_counted(send.as_mut(), &send_wakes));
+
+        let wakes = send_wakes.0.load(Ordering::SeqCst);
+        assert_eq!(Ok(Some(1)), rx.try_recv());
+        assert_eq!(send_wakes.0.load(Ordering::SeqCst), wakes + 1);
+        assert_eq!(
+            Poll::Ready(Ok(())),
+            poll_counted(send.as_mut(), &send_wakes)
+        );
+        assert_eq!(Ok(Some(2)), rx.try_recv());
+        assert_eq!(Ok(None), rx.try_recv());
+    }
+
+    #[test]
+    fn test_unbounded_send_when_receiver_dropped() {
+        let (tx, rx) = async_channel_unbounded();
+        let tx_clone = tx.clone();
+        drop(rx);
+
+        assert_eq!(Err(1), tx.send(1));
+        assert_eq!(Err(2), tx_clone.send(2));
+    }
+
+    #[test]
+    fn test_unbounded_send_when_receiver_dropped_with_capacity() {
+        let (tx, rx) = async_channel_unbounded_with_capacity(5);
+        let tx_clone = tx.clone();
+        tx.send(1).unwrap();
+        drop(rx);
+
+        assert_eq!(Err(2), tx.send(2));
+        assert_eq!(Err(3), tx_clone.send(3));
     }
 
     #[crate::test]

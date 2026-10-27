@@ -40,7 +40,7 @@ jobs:
       run: cargo +${{ matrix.rust }} clippy --locked --all-targets -- -D warnings
 
     - name: Run tests
-      run: cargo +${{ matrix.rust }} test --locked --all-targets --features ssl2
+      run: cargo +${{ matrix.rust }} test --locked --all-targets
 
     - name: Run virtual-clock tests
       run: cargo +${{ matrix.rust }} test --locked --all-targets --features virtual-clock

@@ -39,8 +39,6 @@ pub(crate) mod ring_future;
 mod runtime;
 mod runtime_handle;
 pub mod socket_helpers;
-#[cfg(feature = "ssl2")]
-pub mod ssl2;
 pub mod task;
 pub mod task_pool;
 mod task_ref;

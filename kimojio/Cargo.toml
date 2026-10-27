@@ -51,8 +51,6 @@ enter_stats = []
 fault_injection = []
 # Enable virtual clock for deterministic test timing
 virtual-clock = []
-# Temporary feature for ssl2
-ssl2 = ["tls"]
 
 [package.metadata.docs.rs]
 all-features = true

@@ -48,19 +48,17 @@ impl Timer {
         #[cfg(target_arch = "x86_64")]
         {
             for _ in 0..64 {
-                unsafe {
-                    let start_tick = Self::ticks();
-                    let start = Instant::now();
-                    for _ in 0..4 * 1024 {
-                        core::arch::x86_64::_mm_pause();
-                    }
-                    let total = start.elapsed();
-                    let end_tick = Self::ticks();
-
-                    let ticks = end_tick - start_tick;
-                    let ticks_per_us = ticks as u128 / total.as_micros();
-                    result = std::cmp::min(ticks_per_us as u64, result);
+                let start_tick = Self::ticks();
+                let start = Instant::now();
+                for _ in 0..4 * 1024 {
+                    core::arch::x86_64::_mm_pause();
                 }
+                let total = start.elapsed();
+                let end_tick = Self::ticks();
+
+                let ticks = end_tick - start_tick;
+                let ticks_per_us = ticks as u128 / total.as_micros();
+                result = std::cmp::min(ticks_per_us as u64, result);
             }
         }
         #[cfg(target_arch = "aarch64")]

@@ -86,16 +86,6 @@ pub struct OwnedFdStreamRead {
     read_state: OwnedFdReadState,
 }
 
-impl OwnedFdStreamRead {
-    /// This exists for use by tests
-    pub async fn close(&self) -> Result<(), Errno> {
-        if let Some(fd) = &self.fd {
-            operations::close(fd.try_clone().unwrap()).await?;
-        }
-        Ok(())
-    }
-}
-
 /// The write half of an `OwnedFdStream` after splitting.
 pub struct OwnedFdStreamWrite {
     fd: Option<OwnedFd>,
@@ -585,31 +575,6 @@ mod test {
 
         // Writing after close should fail
         let result = write_stream.write(b"after close", None).await;
-        assert!(result.is_err());
-    }
-
-    #[crate::test]
-    async fn owned_fd_stream_read_stream_close_test() {
-        let (client, server) = bipipe();
-        let stream = OwnedFdStream::new(client);
-        let (mut read_stream, _write_stream) = stream.split().await.unwrap();
-
-        // Write some data from server side and close server
-        let mut server_stream = OwnedFdStream::new(server);
-        server_stream.write(b"test data", None).await.unwrap();
-        server_stream.close().await.unwrap();
-
-        // Read some data
-        let mut buffer = [0u8; 9];
-        read_stream.read(&mut buffer, None).await.unwrap();
-        assert_eq!(&buffer, b"test data");
-
-        // Close the read stream
-        read_stream.close().await.unwrap();
-
-        // Reading after close should fail
-        let mut empty_buffer = [0u8; 1];
-        let result = read_stream.read(&mut empty_buffer, None).await;
         assert!(result.is_err());
     }
 

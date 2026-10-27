@@ -6,9 +6,12 @@ on:
   pull_request:
     branches: [ "main" ]
 
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
-  DEFAULT_RUST_VERSION: 1.92.0
+  DEFAULT_RUST_VERSION: 1.99.1
 
 jobs:
   build:
@@ -17,10 +20,12 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        rust: [ 1.90.0, 1.92.0 ]
+        rust: [ 1.93.0, 1.99.1 ]
 
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        persist-credentials: false
 
     - name: Remove toolchain file to avoid conflict with rust version setup.
       run: rm rust-toolchain.toml
@@ -32,22 +37,22 @@ jobs:
         components: rustfmt, clippy
 
     - name: Build
-      run: cargo +${{ matrix.rust }} clippy --all-targets -- -D warnings
+      run: cargo +${{ matrix.rust }} clippy --locked --all-targets -- -D warnings
 
     - name: Run tests
-      run: cargo +${{ matrix.rust }} test --all-targets --features ssl2
+      run: cargo +${{ matrix.rust }} test --locked --all-targets --features ssl2
 
     - name: Run virtual-clock tests
-      run: cargo +${{ matrix.rust }} test --all-targets --features virtual-clock
+      run: cargo +${{ matrix.rust }} test --locked --all-targets --features virtual-clock
 
     - name: Check docs
-      run: cargo +${{ matrix.rust }} test --doc
+      run: cargo +${{ matrix.rust }} test --locked --doc
 
     - name: Check format
       run: cargo +${{ matrix.rust }} fmt --all -- --check
 
     - name: Check features
-      run: cargo +${{ matrix.rust }} clippy --all-targets --all-features -- -D warnings
+      run: cargo +${{ matrix.rust }} clippy --locked --all-targets --all-features -- -D warnings
     
   coverage:
     if: github.repository == 'Azure/kimojio-rs'
@@ -56,6 +61,8 @@ jobs:
 
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        persist-credentials: false
 
     - name: Install rust stable
       uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
@@ -63,20 +70,11 @@ jobs:
         toolchain: ${{ env.DEFAULT_RUST_VERSION }}
         components: llvm-tools
 
-    - uses: taiki-e/install-action@cargo-llvm-cov
-
-    # for now we can see the results in the UI, don't need to save the html
-
-    # - name: Generate coverage
-    #   run: |
-    #     cargo llvm-cov --workspace --html
-    
-    # - name: Archive coverage repository
-    #   uses: actions/upload-artifact@v4
-    #   with:
-    #     name: coverage-report
-    #     path: target/llvm-cov/html
+    - name: Install cargo-llvm-cov
+      uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
+      with:
+        tool: cargo-llvm-cov
 
     - name: Coverage summary
       run: |
-        cargo llvm-cov --workspace --summary-only
+        cargo llvm-cov --locked --workspace --summary-only

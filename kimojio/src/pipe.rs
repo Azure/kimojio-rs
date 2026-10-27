@@ -61,8 +61,8 @@ mod test {
     async fn pipe_test() {
         let (read, write) = pipe().unwrap();
 
-        let output1 = [b'h', b'e', b'l', b'l', b'o'];
-        let output2 = [b'w', b'o', b'r', b'l', b'd'];
+        let output1 = *b"hello";
+        let output2 = *b"world";
         let output = [IoSlice::new(&output1), IoSlice::new(&output2)];
         operations::writev(&write, &output[..], None).await.unwrap();
         let mut buf1 = [0u8; 3];

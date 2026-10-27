@@ -5,6 +5,17 @@ updates:
     groups:
       github-actions:
         patterns: ["*"]
+        update-types: ["minor", "patch"]
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+  - package-ecosystem: "cargo"
+    directory: "/"
+    groups:
+      cargo:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
     schedule:
       interval: "weekly"
     cooldown:

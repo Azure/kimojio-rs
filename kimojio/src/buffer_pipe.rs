@@ -5,10 +5,12 @@ use crate::{AsyncEvent, AsyncLock, AsyncStreamRead, AsyncStreamWrite, Errno, Spl
 use std::{cell::Cell, rc::Rc, time::Instant};
 
 /// A simple in-memory pipe implementation for testing purposes.
-#[derive(Clone, Default)]
+///
+/// Read and write directions close when their last owning handle is dropped.
+/// Readers can drain buffered bytes after the final writer is dropped.
 pub struct BufferPipe {
-    read: Rc<BufferStream>,
-    write: Rc<BufferStream>,
+    read: BufferReadStream,
+    write: BufferWriteStream,
 }
 
 impl BufferPipe {
@@ -20,11 +22,32 @@ impl BufferPipe {
         let b = Rc::new(BufferStream::new());
         (
             Self {
-                read: a.clone(),
-                write: b.clone(),
+                read: BufferReadStream::new(a.clone()),
+                write: BufferWriteStream::new(b.clone()),
             },
-            Self { read: b, write: a },
+            Self {
+                read: BufferReadStream::new(b),
+                write: BufferWriteStream::new(a),
+            },
         )
+    }
+}
+
+impl Clone for BufferPipe {
+    fn clone(&self) -> Self {
+        Self {
+            read: BufferReadStream::new(self.read.0.clone()),
+            write: BufferWriteStream::new(self.write.0.clone()),
+        }
+    }
+}
+
+impl Default for BufferPipe {
+    fn default() -> Self {
+        Self {
+            read: BufferReadStream::new(Rc::default()),
+            write: BufferWriteStream::new(Rc::default()),
+        }
     }
 }
 
@@ -52,7 +75,7 @@ impl AsyncStreamWrite for BufferPipe {
     }
 
     async fn close(&mut self) -> Result<(), Errno> {
-        self.read.close().await?;
+        self.read.0.close().await?;
         self.write.close().await
     }
 }
@@ -62,9 +85,7 @@ impl SplittableStream for BufferPipe {
     type WriteStream = BufferWriteStream;
 
     async fn split(self) -> Result<(Self::ReadStream, Self::WriteStream), Errno> {
-        let read = self.read;
-        let write = self.write;
-        Ok((BufferReadStream(read), BufferWriteStream(write)))
+        Ok((self.read, self.write))
     }
 }
 
@@ -77,53 +98,56 @@ struct BufferStreamState {
 /// A single-direction in-memory buffer stream.
 ///
 /// Provides async read and write operations backed by an in-memory buffer.
+/// After closure, reads can drain buffered bytes. Once the buffer is empty,
+/// `try_read` returns zero. An exact `read` returns an error if it cannot fill
+/// the requested buffer.
 pub struct BufferStream {
     state: AsyncLock<BufferStreamState>,
-    available: AsyncEvent,
-    not_full: AsyncEvent,
+    read_ready: AsyncEvent,
+    write_ready: AsyncEvent,
     closed: Cell<bool>,
+    reader_count: Cell<usize>,
+    writer_count: Cell<usize>,
 }
 
 impl BufferStream {
     /// Creates a new empty buffer stream.
     pub fn new() -> Self {
-        let not_full = AsyncEvent::new();
-        not_full.set();
+        let write_ready = AsyncEvent::new();
+        write_ready.set();
         Self {
             state: AsyncLock::new(BufferStreamState {
                 buffer: [0; 1024],
                 head: 0,
                 amount: 0,
             }),
-            available: AsyncEvent::new(),
-            not_full,
+            read_ready: AsyncEvent::new(),
+            write_ready,
             closed: Cell::new(false),
+            reader_count: Cell::new(0),
+            writer_count: Cell::new(0),
         }
     }
 
-    fn update_events(&self, state: &BufferStreamState) {
-        let available = state.amount > 0;
-        let full = state.amount == state.buffer.len();
+    fn update_readiness(&self, state: &BufferStreamState) {
+        let read_ready = self.closed.get() || state.amount > 0;
+        let write_ready = self.closed.get() || state.amount < state.buffer.len();
 
-        if available {
-            self.available.set();
+        if read_ready {
+            self.read_ready.set();
         } else {
-            self.available.reset();
+            self.read_ready.reset();
         }
 
-        if full {
-            self.not_full.reset();
+        if write_ready {
+            self.write_ready.set();
         } else {
-            self.not_full.set();
+            self.write_ready.reset();
         }
     }
 
     async fn try_read(&self, buffer: &mut [u8], deadline: Option<Instant>) -> Result<usize, Errno> {
-        if self.closed.get() && !self.available.is_set() {
-            return Err(Errno::from_raw_os_error(crate::EPIPE));
-        }
-
-        self.available.wait().await?;
+        self.read_ready.wait().await?;
 
         let mut state = self.state.lock_with_deadline(deadline).await?;
 
@@ -136,19 +160,15 @@ impl BufferStream {
             state.amount -= amount;
         }
 
-        self.update_events(&state);
+        self.update_readiness(&state);
 
         Ok(amount)
     }
 
     async fn read(&self, buffer: &mut [u8], deadline: Option<Instant>) -> Result<(), Errno> {
-        if self.closed.get() && !self.available.is_set() {
-            return Err(Errno::from_raw_os_error(crate::EPIPE));
-        }
-
         let mut read_len = 0;
         while read_len < buffer.len() {
-            self.available.wait_with_deadline(deadline).await?;
+            self.read_ready.wait_with_deadline(deadline).await?;
 
             let len = self.try_read(&mut buffer[read_len..], deadline).await?;
             if len == 0 {
@@ -166,9 +186,12 @@ impl BufferStream {
 
         while !buffer.is_empty() {
             // TODO: timeout
-            self.not_full.wait_with_deadline(deadline).await?;
+            self.write_ready.wait_with_deadline(deadline).await?;
 
             let mut state = self.state.lock().await?;
+            if self.closed.get() {
+                return Err(Errno::from_raw_os_error(crate::EPIPE));
+            }
             let free_head = (state.head + state.amount) % state.buffer.len();
             let free_amount = state.buffer.len() - state.amount;
             let free_end = std::cmp::min(free_head + free_amount, state.buffer.len());
@@ -178,24 +201,26 @@ impl BufferStream {
             state.amount += amount;
             buffer = &buffer[amount..];
 
-            self.update_events(&state);
+            self.update_readiness(&state);
         }
 
         Ok(())
     }
 
     async fn shutdown(&self) -> Result<(), Errno> {
-        self.closed.set(true);
-        self.available.set();
-        self.not_full.set();
+        self.mark_closed();
         Ok(())
     }
 
     async fn close(&self) -> Result<(), Errno> {
-        self.closed.set(true);
-        self.available.set();
-        self.not_full.set();
+        self.mark_closed();
         Ok(())
+    }
+
+    fn mark_closed(&self) {
+        self.closed.set(true);
+        self.read_ready.set();
+        self.write_ready.set();
     }
 }
 
@@ -234,10 +259,52 @@ impl AsyncStreamWrite for BufferStream {
 }
 
 /// The read half of a `BufferPipe` after splitting.
+///
+/// When the last reader is dropped, further writes fail and blocked writers wake.
 pub struct BufferReadStream(Rc<BufferStream>);
 
 /// The write half of a `BufferPipe` after splitting.
+///
+/// When the last writer is dropped, the reader can drain buffered bytes and then observes EOF.
 pub struct BufferWriteStream(Rc<BufferStream>);
+
+// Cloning a half must also update its endpoint count.
+static_assertions::const_assert!(impls::impls!(BufferReadStream: !Clone));
+static_assertions::const_assert!(impls::impls!(BufferWriteStream: !Clone));
+
+impl BufferReadStream {
+    fn new(stream: Rc<BufferStream>) -> Self {
+        stream.reader_count.set(stream.reader_count.get() + 1);
+        Self(stream)
+    }
+}
+
+impl Drop for BufferReadStream {
+    fn drop(&mut self) {
+        let readers = self.0.reader_count.get() - 1;
+        self.0.reader_count.set(readers);
+        if readers == 0 {
+            self.0.mark_closed();
+        }
+    }
+}
+
+impl BufferWriteStream {
+    fn new(stream: Rc<BufferStream>) -> Self {
+        stream.writer_count.set(stream.writer_count.get() + 1);
+        Self(stream)
+    }
+}
+
+impl Drop for BufferWriteStream {
+    fn drop(&mut self) {
+        let writers = self.0.writer_count.get() - 1;
+        self.0.writer_count.set(writers);
+        if writers == 0 {
+            self.0.mark_closed();
+        }
+    }
+}
 
 impl AsyncStreamRead for BufferReadStream {
     async fn try_read(
@@ -272,15 +339,201 @@ impl SplittableStream for BufferStream {
         let write = Rc::new(self);
         let read = write.clone();
 
-        Ok((BufferReadStream(read), BufferWriteStream(write)))
+        Ok((BufferReadStream::new(read), BufferWriteStream::new(write)))
     }
 }
 
 #[cfg(test)]
 mod test {
     use super::{BufferPipe, BufferStream};
-    use crate::{AsyncStreamRead, AsyncStreamWrite, SplittableStream, operations};
-    use std::rc::Rc;
+    use crate::{AsyncStreamRead, AsyncStreamWrite, Errno, SplittableStream, operations};
+    use std::{pin::pin, rc::Rc, task::Poll};
+
+    #[crate::test]
+    async fn peer_close_last_pipe_drop_wakes_reader() {
+        let (mut reader, peer) = BufferPipe::new();
+        let last_peer = peer.clone();
+        let mut buffer = [0; 1];
+        let mut read = pin!(reader.try_read(&mut buffer, None));
+        assert_eq!(Poll::Pending, futures::poll!(read.as_mut()));
+        drop(peer);
+        assert_eq!(Poll::Pending, futures::poll!(read.as_mut()));
+
+        drop(last_peer);
+
+        assert_eq!(Poll::Ready(Ok(0)), futures::poll!(read.as_mut()));
+    }
+
+    #[crate::test]
+    async fn peer_close_last_pipe_drop_wakes_writer() {
+        let (mut writer, peer) = BufferPipe::new();
+        let last_peer = peer.clone();
+        writer.write(&[1; 1024], None).await.unwrap();
+        let mut write = pin!(writer.write(b"x", None));
+        assert_eq!(Poll::Pending, futures::poll!(write.as_mut()));
+        drop(peer);
+        assert_eq!(Poll::Pending, futures::poll!(write.as_mut()));
+
+        drop(last_peer);
+
+        assert_eq!(
+            Poll::Ready(Err(Errno::PIPE)),
+            futures::poll!(write.as_mut())
+        );
+    }
+
+    #[crate::test]
+    async fn peer_close_pipe_drop_rejects_fresh_write() {
+        let (mut writer, peer) = BufferPipe::new();
+        drop(peer);
+
+        assert_eq!(Err(Errno::PIPE), writer.write(b"x", None).await);
+    }
+
+    #[crate::test]
+    async fn peer_close_pipe_drop_preserves_buffered_data() {
+        let (mut reader, mut peer) = BufferPipe::new();
+        peer.write(b"data", None).await.unwrap();
+        drop(peer);
+
+        let mut buffer = [0; 4];
+        reader.read(&mut buffer, None).await.unwrap();
+        assert_eq!(&buffer, b"data");
+        let mut read = pin!(reader.try_read(&mut buffer, None));
+        assert_eq!(Poll::Ready(Ok(0)), futures::poll!(read.as_mut()));
+    }
+
+    #[crate::test]
+    async fn peer_close_split_write_drop_wakes_reader() {
+        let (mut reader, writer) = BufferStream::new().split().await.unwrap();
+        let mut buffer = [0; 1];
+        let mut read = pin!(reader.try_read(&mut buffer, None));
+        assert_eq!(Poll::Pending, futures::poll!(read.as_mut()));
+
+        drop(writer);
+
+        assert_eq!(Poll::Ready(Ok(0)), futures::poll!(read.as_mut()));
+    }
+
+    #[crate::test]
+    async fn peer_close_split_read_drop_wakes_writer() {
+        let (reader, mut writer) = BufferStream::new().split().await.unwrap();
+        writer.write(&[1; 1024], None).await.unwrap();
+        let mut write = pin!(writer.write(b"x", None));
+        assert_eq!(Poll::Pending, futures::poll!(write.as_mut()));
+
+        drop(reader);
+
+        assert_eq!(
+            Poll::Ready(Err(Errno::PIPE)),
+            futures::poll!(write.as_mut())
+        );
+    }
+
+    #[crate::test]
+    async fn buffer_pipe_close_wakes_all_readers() {
+        for shutdown in [false, true] {
+            let (mut reader, mut writer) = BufferPipe::new();
+            let mut other_reader = reader.clone();
+            let mut first_buffer = [0; 1];
+            let mut second_buffer = [0; 1];
+            let mut first = pin!(reader.read(&mut first_buffer, None));
+            let mut second = pin!(other_reader.read(&mut second_buffer, None));
+            assert_eq!(Poll::Pending, futures::poll!(first.as_mut()));
+            assert_eq!(Poll::Pending, futures::poll!(second.as_mut()));
+
+            if shutdown {
+                writer.shutdown().await.unwrap();
+            } else {
+                writer.close().await.unwrap();
+            }
+
+            let closed = Errno::from_raw_os_error(crate::EPIPE);
+            assert_eq!(Poll::Ready(Err(closed)), futures::poll!(first.as_mut()));
+            assert_eq!(Poll::Ready(Err(closed)), futures::poll!(second.as_mut()));
+        }
+    }
+
+    #[crate::test]
+    async fn buffer_stream_close_rejects_blocked_write() {
+        for shutdown in [false, true] {
+            let stream = BufferStream::new();
+            stream.write(&[1; 1024], None).await.unwrap();
+            let mut write = pin!(stream.write(b"x", None));
+            assert_eq!(Poll::Pending, futures::poll!(write.as_mut()));
+
+            if shutdown {
+                stream.shutdown().await.unwrap();
+            } else {
+                stream.close().await.unwrap();
+            }
+
+            assert_eq!(
+                Poll::Ready(Err(Errno::from_raw_os_error(crate::EPIPE))),
+                futures::poll!(write.as_mut())
+            );
+        }
+    }
+
+    #[crate::test]
+    async fn buffer_stream_close_rejects_blocked_write_after_drain() {
+        for shutdown in [false, true] {
+            let stream = BufferStream::new();
+            stream.write(&[1; 1024], None).await.unwrap();
+            let mut write = pin!(stream.write(b"x", None));
+            assert_eq!(Poll::Pending, futures::poll!(write.as_mut()));
+
+            if shutdown {
+                stream.shutdown().await.unwrap();
+            } else {
+                stream.close().await.unwrap();
+            }
+
+            let mut buffer = [0; 1024];
+            stream.read(&mut buffer, None).await.unwrap();
+            assert_eq!(buffer, [1; 1024]);
+            assert_eq!(
+                Poll::Ready(Err(Errno::from_raw_os_error(crate::EPIPE))),
+                futures::poll!(write.as_mut())
+            );
+            assert_eq!(Ok(0), stream.try_read(&mut buffer, None).await);
+        }
+    }
+
+    #[crate::test]
+    async fn buffer_stream_closed_try_read_eof_after_drain() {
+        for shutdown in [false, true] {
+            let stream = BufferStream::new();
+            stream.write(b"x", None).await.unwrap();
+            if shutdown {
+                stream.shutdown().await.unwrap();
+            } else {
+                stream.close().await.unwrap();
+            }
+
+            let mut buffer = [0; 1];
+            assert_eq!(Ok(1), stream.try_read(&mut buffer, None).await);
+            assert_eq!(buffer, [b'x']);
+            assert_eq!(Ok(0), stream.try_read(&mut buffer, None).await);
+            assert_eq!(Ok(0), stream.try_read(&mut buffer, None).await);
+        }
+    }
+
+    #[crate::test]
+    async fn buffer_stream_closed_try_read_eof_is_stable() {
+        for shutdown in [false, true] {
+            let stream = BufferStream::new();
+            if shutdown {
+                stream.shutdown().await.unwrap();
+            } else {
+                stream.close().await.unwrap();
+            }
+
+            let mut buffer = [0; 1];
+            assert_eq!(Ok(0), stream.try_read(&mut buffer, None).await);
+            assert_eq!(Ok(0), stream.try_read(&mut buffer, None).await);
+        }
+    }
 
     #[crate::test]
     async fn buffer_stream_test_write_larger_than_internal_buffer() {
@@ -348,7 +601,7 @@ mod test {
         // Shut down the stream.
         stream.shutdown().await.unwrap();
 
-        // Subsequent operations should error.
+        // Further writes must fail.
         let res2 = stream.write(b"more", None).await;
         assert!(res2.is_err());
 
@@ -359,7 +612,7 @@ mod test {
         let res = stream.read(&mut buf, None).await;
         assert!(res.is_err());
         let res3 = stream.try_read(&mut buf, None).await;
-        assert!(res3.is_err());
+        assert_eq!(Ok(0), res3);
     }
 
     #[crate::test]
@@ -421,7 +674,7 @@ mod test {
         buffer_stream.read(&mut buffer, None).await.unwrap();
         assert_eq!(&buffer, b"helloworld");
 
-        // 5. try_read, read, and write to a closed stream returns an error
+        // 5. read and write to a closed stream return an error
         buffer_stream.shutdown().await.unwrap();
         let result = buffer_stream.read(&mut buffer, None).await;
         assert!(result.is_err());
@@ -842,9 +1095,9 @@ mod test {
         let result = buffer_stream.read(&mut empty_buffer, None).await;
         assert!(result.is_err());
 
-        // try_read should also fail after shutdown with no data
+        // try_read returns EOF after the buffered data is drained.
         let result = buffer_stream.try_read(&mut empty_buffer, None).await;
-        assert!(result.is_err());
+        assert_eq!(Ok(0), result);
     }
 
     #[crate::test]
@@ -871,8 +1124,8 @@ mod test {
         let result = buffer_stream.read(&mut empty_buffer, None).await;
         assert!(result.is_err());
 
-        // try_read should also fail after close with no data
+        // try_read returns EOF after the buffered data is drained.
         let result = buffer_stream.try_read(&mut empty_buffer, None).await;
-        assert!(result.is_err());
+        assert_eq!(Ok(0), result);
     }
 }
